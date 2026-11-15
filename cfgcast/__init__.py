@@ -2,7 +2,7 @@
 from ._errors import ConfigError, ConfigWarning
 from ._base import cfg, to_dict, write
 from ._load import load_cfg
-from enforced import turn_colours_off, turn_colours_on
+from clitint import turn_colours_off, turn_colours_on
 
 __version__ = "0.1.0"
 __all__ = [
