@@ -166,11 +166,16 @@ enforced's coercion also has a rule made for cfgcast (2026-10-18): a `date` for 
 
 - **Checkers don't see `App.load` / `App.from_dict`** (members a decorator adds at run time): the README says so and
   points to `load_cfg`. The ways out are in `PLAN.md` ("Methods").
-- **Built on 2026-11-15** (`PLAN.md`, "Next features" 1 to 4): lists and dicts of sections, dates in the writers,
-  layered files, environment variables. Still open there ("Open"): a layer that may be absent (`optional(...)` or
-  `missing_ok`), `.env` files, `@cfg(env_prefix = ...)`, durations.
-- **Left from the code review of 2026-11-15** (`PLAN.md`, "Open"; each is a decision, not an oversight): an exception
-  of the user's own `__post_init__` that isn't an `InvalidDataError` leaves `_build` and the gathered problems are
-  lost; a union with a section in it (`Database | str`, `list[Server | None]`) is built as the section only; a full
-  disk in the middle of a write leaves half a file (no temporary file and `os.replace`).
+- **Built on 2026-11-15** (`PLAN.md`, the first "Next features"): lists and dicts of sections, dates in the writers,
+  layered files, environment variables.
+- **Next** (`PLAN.md`, "Next features (planned 2026-11-15)", in that order): atomic writes (a full disk in the middle of
+  a write still leaves half a file), `__post_init__` exceptions gathered as problems (today one escapes and the gathered
+  problems are lost), `optional("local.toml")` in a list of files, `.env` files, `@cfg(env_prefix = ...)`, durations
+  (waiting on enforced), checkers seeing `load` / `from_dict`, JSON (`to_text`, `to_dict(plain = True)`;
+  `json.dumps(to_dict(app))` writes a `SecretStr`'s real text), `cfgcast.field`, keys that aren't Python names, a
+  section of a bigger file, secrets from `_FILE` variables, `sources_of` with lines, templates. Undecided: overrides at
+  load time, renamed keys, unions with a section.
+- **Decided 2026-11-15**: a file not marked `optional` must be there (no `missing_ok`).
+- **enforced**: a `date` field keeps a `datetime` it is given, so `write` then `load_cfg` of a `date` with a time fails.
+  Planned in `/mnt/d/dev/enforced/date_plan_cfgcast.md`.
 - `_hints.section_of` takes any dataclass as a section, not only a `@cfg` class; `_Sections` only `@cfg` ones.
