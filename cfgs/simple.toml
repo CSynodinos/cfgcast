@@ -1,0 +1,8 @@
+name = "storefront"
+version = "1.0"          # a string: quoted, or TOML would refuse it
+debug = true
+port = 8080
+timeout = 2.5
+workers = 4
+log_level = "INFO"
+hosts = ["localhost", "shop.example.com"]

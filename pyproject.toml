@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfgcast"
+dynamic = ["version"]
+description = "Typed configuration files (JSON, TOML, ini/cfg, YAML), checked by enforced"
+requires-python = ">=3.13"
+dependencies = ["enforced"]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]
+dev = ["pytest", "mypy", "PyYAML>=6", "types-PyYAML"]
+
+[tool.setuptools]
+packages = ["cfgcast"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cfgcast.__version__" }
+
+[tool.setuptools.package-data]
+cfgcast = ["py.typed"]

@@ -1,0 +1,65 @@
+# Top-level keys come first; a table (section) runs until the next header.
+name = "storefront"
+environment = "staging"
+debug = false
+secret_key = "k3y-9f2c71ab-do-not-print"           # a SecretStr in the schema
+base_url = "https://shop.example.com"              # a Url
+support_email = "help@example.com"                 # an Email
+support_phone = "+4915112345678"                   # a PhoneNumber
+fallback_locale = "no"                             # Norwegian: a string, quoted
+allowed_hosts = ["shop.example.com", "admin.example.com", "localhost"]
+
+[db]
+host = "db.internal"
+port = 5432
+name = "shop"
+user = "shop_app"
+password = "pa55w0rd-also-secret"
+
+[db.pool]                                          # a table inside [db]
+min_size = 2
+max_size = 20
+timeout = 30.5
+
+[db.replica]
+host = "db-replica.internal"
+port = 5432
+read_only = true
+
+[cache]
+backend = "redis"
+ttl = 300.0
+max_items = 10000
+namespaces = ["sessions", "carts", "catalog"]
+
+[server]
+host = "0.0.0.0"
+port = 8080
+workers = 4
+open_ports = [80, 443, 8080]
+
+[server.tls]
+enabled = true
+cert_path = "/etc/ssl/shop.pem"
+key_path = "/etc/ssl/shop.key"
+
+[logging]
+level = "INFO"
+format = "{asctime} {levelname} {message}"
+handlers = ["console", "file"]
+
+[logging.rotation]
+max_mb = 50
+backups = 7
+
+[features]
+new_checkout = true
+wishlist = false
+rollout = 0.25
+beta_users = ["ana", "ben", "chloe"]
+weights = [0.5, 0.3, 0.2]
+
+[monitoring]
+metrics_url = "https://metrics.example.com/ingest"
+sample_rate = 0.1
+tags = ["shop", "staging", "eu-west"]
