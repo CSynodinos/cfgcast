@@ -1,0 +1,13 @@
+# Dates and times are TOML's own literals; a dictionary of sections is a table of tables.
+name = "nightly"
+starts = 2026-10-17                                # a date
+built_at = 2026-10-17T12:30:00+00:00               # a datetime, with its offset
+daily_at = 02:15:00                                # a time
+
+[regions.eu]
+host = "eu.example.com"
+weight = 0.7
+
+[regions.us]
+host = "us.example.com"
+weight = 0.3

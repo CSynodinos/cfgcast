@@ -143,3 +143,33 @@ def test_without_pyyaml_the_error_says_what_to_install(monkeypatch, tmp_path):
 
 def test_every_format_has_a_reader():
     assert set(CONFIG_READERS) == {"json", "toml", "ini", "yaml"}
+
+
+def test_ini_and_sections_in_lists_and_dictionaries(tmp_path):
+    @cfg
+    class Region:
+        hosts: list[str]
+
+    @cfg
+    class App:
+        regions: dict[str, Region] = field(default_factory = dict)
+        servers: list[Region] = field(default_factory = list)
+
+    @cfg
+    class Outer:
+        app: App
+
+    #* A dictionary of sections is a dotted section per name, its lists split as anywhere.
+    data = read_ini(_file(tmp_path, "x.ini", "[regions.eu]\nhosts = a, b\n\n[regions.us]\nhosts =\n"), App)
+    assert data == {"regions": {"eu": {"hosts": ["a", "b"]}, "us": {"hosts": []}}}
+    #* A list of sections can't be written in ini: said with the field, also in a section.
+    with pytest.raises(ValueError, match = r"x\.ini: servers is a list of sections \(Region\)"):
+        read_ini(_file(tmp_path, "x.ini", "[DEFAULT]\nservers = a, b\n"), App)
+    with pytest.raises(ValueError, match = r"app\.servers is a list of sections"):
+        read_ini(_file(tmp_path, "x.ini", "[app]\nservers = a, b\n"), Outer)
+
+
+def test_a_clash_never_shows_the_value(tmp_path):
+    with pytest.raises(ValueError, match = r"\[token\.x\] clashes with the key token$") as info:
+        read_ini(_file(tmp_path, "x.ini", "[DEFAULT]\ntoken = hunter2\n\n[token.x]\na = 1\n"))
+    assert "hunter2" not in str(info.value)

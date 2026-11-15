@@ -1,0 +1,7 @@
+# The second layer, in another format: only what production changes.
+debug: false
+hosts: [shop.example.com, admin.example.com]      # a list is replaced, not appended to
+db:
+  host: db.internal
+  pool:
+    max_size: 50                                  # min_size stays the base's

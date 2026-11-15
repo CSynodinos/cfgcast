@@ -255,3 +255,16 @@ class Outer:
 class Written_later:
     n: int
 
+
+
+def test_lists_and_dictionaries_of_sections_are_marked_as_such():
+    @cfg
+    class Fleet:
+        main: Database
+        servers: list[Database]
+        pair: tuple[Database, ...] = ()
+        by_region: dict[str, Database] | None = None
+        names: list[str] = field(default_factory = list)            # a list of values is no section
+
+    assert getattr(Fleet, SECTIONS_ATTR) == {"main": Database, "servers": list[Database],
+                                             "pair": tuple[Database, ...], "by_region": dict[str, Database]}

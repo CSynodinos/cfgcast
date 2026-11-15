@@ -6,9 +6,10 @@ import warnings
 
 import pytest
 
-from enforced import InvalidDataError, _formatting_tool
+from enforced import InvalidDataError
+import clitint._tint as tint                                   # the colour switches are clitint's state
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, cfg
+from cfgcast import ConfigError, cfg, to_dict
 from cfgcast._build import MASK, build, problems_of
 from cfgcast._errors import ConfigWarning
 
@@ -41,6 +42,7 @@ class Loose:
     db: Db
 
 
+LOOSE_AT = f"{__file__}:{Loose.__firstlineno__}"                    # where the warning says Loose is written
 GOOD = {"name": "shop", "db": {"host": "h", "password": "pw", "pool": {"size": "4"}}}
 
 
@@ -101,7 +103,7 @@ def test_ignored_keys_give_one_warning_with_paths_and_no_values():
         build(Loose, {**GOOD, "token": "hunter2", "other": {"secret": "hunter3"}}, "app.toml")
     assert len(caught) == 1 and caught[0].category is ConfigWarning
     warning = caught[0].message
-    assert str(warning) == "2 unknown keys ignored in app.toml for Loose:\n    -> token\n    -> other"
+    assert str(warning) == f"2 unknown keys ignored in app.toml for Loose ({LOOSE_AT}):\n    -> token\n    -> other"
     assert "hunter" not in repr(warning.errors()) and "hunter" not in str(warning)
     assert warning.errors()[0] == {"type": "unknown", "loc": ["app.toml", "token"], "msg": "key not in the schema",
                                    "ctx": {"schema": "Loose"}}
@@ -239,11 +241,96 @@ def test_one_problem_reads_in_the_singular():
 
 
 def test_the_warning_is_plain_as_text_and_coloured_on_a_terminal(monkeypatch):
-    monkeypatch.setattr(_formatting_tool, "_CHOSEN", True)
+    monkeypatch.setattr(tint, "_CHOSEN", True)
     warning = ConfigWarning("app.ini", Loose, [{"type": "unknown", "loc": ["app.ini", "db", "typo"], "msg": "m"}])
-    assert str(warning) == "1 unknown key ignored in app.ini for Loose:\n    -> db.typo"
+    assert str(warning) == f"1 unknown key ignored in app.ini for Loose ({LOOSE_AT}):\n    -> db.typo"
     assert warning.shown() == ("\x1b[1m\x1b[31m1\x1b[0m unknown key ignored in \x1b[36mapp.ini\x1b[0m "
-                               "for \x1b[1m\x1b[33mLoose\x1b[0m:\n    -> \x1b[1m\x1b[31mdb.typo\x1b[0m")
+                               f"for \x1b[1m\x1b[33mLoose\x1b[0m (\x1b[36m{LOOSE_AT}\x1b[0m):\n    -> \x1b[1m\x1b[31mdb.typo\x1b[0m")
     text = warnings.formatwarning(warning, ConfigWarning, "run.py", 142, "load_cfg()")
     assert text.startswith("\x1b[36mrun.py\x1b[0m:\x1b[1m\x1b[33m142\x1b[0m: \x1b[1m\x1b[38;2;255;165;0mConfigWarning\x1b[0m: ")
     assert text.endswith(warning.shown() + "\n  load_cfg()\n")
+
+
+# ── lists and dictionaries of sections ──────────────────────────────────────
+
+@cfg
+class Server:
+    host: str
+    port: Port = 80
+    token: SecretStr | None = None
+
+
+@cfg
+class Fleet:
+    servers: list[Server]
+    pair: tuple[Server, ...] = ()
+    by_region: dict[str, Server] = field(default_factory = dict)
+    spare: list[Server] | None = None
+
+
+def test_a_list_a_tuple_and_a_dictionary_of_sections_are_built_item_by_item():
+    fleet = build(Fleet, {"servers": [{"host": "a"}, {"host": "b", "port": "81"}], "pair": [{"host": "c"}],
+                          "by_region": {"eu": {"host": "d"}}, "spare": None}, "f")
+    assert fleet.servers == [Server(host = "a"), Server(host = "b", port = 81)]
+    assert fleet.pair == (Server(host = "c"),) and fleet.by_region == {"eu": Server(host = "d")} and fleet.spare is None
+    assert build(Fleet, {"servers": []}, "f") == Fleet(servers = [])
+    assert Fleet.from_dict(to_dict(fleet)) == fleet
+
+
+def test_problems_in_them_have_the_index_or_the_key():
+    error = _error(Fleet, {"servers": [{"host": "a"}, {"port": 0, "x": 1}, "text"], "by_region": {"eu": {"host": 1}}})
+    assert {tuple(p["loc"][1:]): p["type"] for p in error.errors()} == {
+        ("servers", 1, "x"): "unknown", ("servers", 1, "host"): "missing", ("servers", 1, "port"): "invalid",
+        ("servers", 2): "section", ("by_region", "eu", "host"): "type"}
+    assert "    servers[1].port: " in str(error) and "    by_region.eu.host: " in str(error)
+    assert "    servers[2]: expected a section of keys, got str" in str(error)
+
+
+@pytest.mark.parametrize("data, where, said", [
+    ({"servers": "a, b"}, "servers", "expected a list of sections, got str"),
+    ({"servers": {"host": "a"}}, "servers", "expected a list of sections, got dict"),
+    ({"servers": [], "pair": 5}, "pair", "expected a list of sections, got int"),
+    ({"servers": [], "by_region": [{"host": "a"}]}, "by_region", "expected sections by name, got list"),
+    ({"servers": None}, "servers", "expected a list of sections, got NoneType"),
+    ], ids = str)
+def test_what_is_no_list_or_dictionary_of_sections_is_one_problem(data, where, said):
+    error = _error(Fleet, data)
+    assert [(p["type"], p["loc"], p["msg"]) for p in error.errors()] == [("section", ["app.toml", where], said)]
+
+
+def test_what_stands_in_a_sections_place_is_never_shown():
+    error = _error(Fleet, {"servers": "hunter2", "by_region": {"eu": ["hunter3"]}})
+    assert all("input" not in p for p in error.errors())
+    assert "hunter" not in str(error) + error.json() + repr(error)
+
+
+def test_a_secret_in_a_list_of_sections_is_masked():
+    error = _error(Fleet, {"servers": [{"host": "a", "token": ["hunter2"]}]})
+    assert error.errors()[0]["loc"] == ["app.toml", "servers", 0, "token"] and error.errors()[0]["input"] == MASK
+    assert "hunter2" not in str(error) + error.json()
+
+
+def test_strict_false_reaches_the_items_too():
+    @cfg(strict = False)
+    class LooseFleet:
+        servers: list[Server]
+        by_region: dict[str, Server]
+
+    with pytest.warns(ConfigWarning) as caught:
+        build(LooseFleet, {"servers": [{"host": "a", "x": 1}], "by_region": {"eu": {"host": "b", "y": 1}}}, "f")
+    assert [p["loc"] for p in caught[0].message.errors()] == [["f", "servers", 0, "x"], ["f", "by_region", "eu", "y"]]
+
+
+def test_the_warning_says_where_the_class_is_written():
+    warning = ConfigWarning("app.toml", Loose, [{"type": "unknown", "loc": ["app.toml", "x"], "msg": "m"}])
+    assert f"for Loose ({__file__}:39):" in str(warning)            # the line of @cfg(strict = False) above
+
+
+def test_the_warning_leaves_the_place_out_where_it_cant_be_found():
+    made = cfg(strict = False)(type("Made", (), {"__annotations__": {"name": str}}))    # no file, no first line
+    namespace: dict = {}
+    exec("from cfgcast import cfg\n@cfg(strict = False)\nclass Typed:\n    name: str\n", namespace)    # a file that isn't there
+    for schema in (made, namespace["Typed"]):
+        with pytest.warns(ConfigWarning) as caught:
+            build(schema, {"name": "x", "y": 1}, "app.toml")
+        assert str(caught[0].message) == f"1 unknown key ignored in app.toml for {schema.__name__}:\n    -> y"

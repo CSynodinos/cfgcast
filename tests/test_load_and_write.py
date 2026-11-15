@@ -223,7 +223,7 @@ def test_every_way_in_warns_and_points_at_the_line_that_called_it(tmp_path):
             assert read().db.host == "h"
         assert [w.category for w in caught] == [ConfigWarning]
         assert caught[0].filename == __file__
-        assert str(caught[0].message).endswith("for Lenient:\n    -> added\n    -> db.added")
+        assert str(caught[0].message).endswith(f"for Lenient ({__file__}:{Lenient.__firstlineno__}):\n    -> added\n    -> db.added")
         assert "hunter2" not in str(caught[0].message)
 
 
@@ -272,3 +272,32 @@ def _ini_schema() -> type:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.BadComplexCfg
+
+
+# ── found by review ─────────────────────────────────────────────────────────
+
+def test_a_field_the_class_works_out_is_no_key(tmp_path):
+    @cfg
+    class Derived:
+        name: str
+        shout: str = field(init = False, default = "")
+
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "shout", self.name.upper())
+
+    made = Derived(name = "shop")
+    assert made.shout == "SHOP" and to_dict(made) == {"name": "shop"}
+    write(made, tmp_path / "d.toml", {"name": "other"})
+    assert load_cfg(tmp_path / "d.toml", Derived).shout == "OTHER"
+
+
+def test_keys_that_were_converted_are_written_and_load_again(tmp_path):
+    @cfg
+    class Limits:
+        by_port: dict[int, str]
+
+    limits = Limits.from_dict({"by_port": {"80": "web", "5432": "db"}})
+    assert limits.by_port == {80: "web", 5432: "db"}
+    for suffix in ("json", "toml", "ini"):
+        write(limits, tmp_path / f"l.{suffix}")
+        assert load_cfg(tmp_path / f"l.{suffix}", Limits) == limits

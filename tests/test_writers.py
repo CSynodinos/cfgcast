@@ -1,4 +1,5 @@
 """The writers: a dictionary in, a file out, read back by the readers as it was (`_writers`)."""
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -14,7 +15,8 @@ from cfgcast._writers import WRITERS, _plain, write_ini, write_json, write_toml,
 TRICKY = ["no", "on", "Yes", "08", "007", "1e3", "1_000", "1:20", "null", "~", "", " lead", "trail ", "a: b",
           "a #b", "#x", "-x", "x:", "2026-10-17", "'q'", '"dq"', "tab\there", "line\nbreak", "uni ✓ é",
           "back\\slash", "{a}", "[a]", "*star", "&amp", "!bang", "%pct", "@at", "`tick", "|pipe", ">gt",
-          "?q", ".inf", "+1", "-1.5", "0x1F", "0o7", "true", "False", "<<"]
+          "?q", ".inf", "+1", "-1.5", "0x1F", "0o7", "true", "False", "<<", "=",
+          "del\x7f", "nel\x85here", "sep\u2028here", "\ufeffbom", "emoji 🙂"]
 
 DATA = {
     "name": "shop", "debug": False, "port": 8080, "ratio": 0.25, "big": 1e16, "small": 1e-5,
@@ -131,7 +133,7 @@ def test_ini_writes_booleans_lower_case_and_skips_none(tmp_path):
     ({"s": "line\nbreak"}, "line break"),
     ({"s": " lead"}, "spaces around"),
     ({"l": ["a,b"]}, "comma"),
-    ({"l": [{"a": 1}]}, "list of dict"),
+    ({"l": [{"a": 1}]}, "list of sections"),
     ({"l": [[1]]}, "list of list"),
     ({"DEFAULT": {"a": 1}}, "DEFAULT"),
     ({"a.b": {"c": 1}}, "section name"),
@@ -170,8 +172,8 @@ def test_what_no_format_can_hold_is_a_type_error_before_the_file_is_opened(tmp_p
     for fmt in ("json", "toml", "ini", "yaml"):
         with pytest.raises(TypeError, match = "can't be written"):
             WRITERS[fmt](tmp_path / f"x.{fmt}", {"when": object()})
-        with pytest.raises(TypeError, match = "must be text"):
-            WRITERS[fmt](tmp_path / f"y.{fmt}", {1: "x"})
+        with pytest.raises(TypeError, match = "a key of a configuration"):
+            WRITERS[fmt](tmp_path / f"y.{fmt}", {(1, 2): "x"})
         assert not (tmp_path / f"x.{fmt}").exists() and not (tmp_path / f"y.{fmt}").exists()
 
 
@@ -197,3 +199,100 @@ def test_empty_data(tmp_path):
 
 
 def _unused(_: Path) -> None: ...
+
+
+# ── dates and times ─────────────────────────────────────────────────────────
+
+WHEN = {
+    "day": date(2026, 10, 17),
+    "at": datetime(2026, 10, 17, 12, 30, 5),
+    "exact": datetime(2026, 10, 17, 12, 30, 5, 123456, tzinfo = timezone(timedelta(hours = 2))),
+    "utc": datetime(2026, 10, 17, 12, 30, tzinfo = timezone.utc),
+    "clock": time(2, 15),
+    "days": [date(2026, 1, 1), date(2026, 12, 31)],
+    "in": {"day": date(2000, 2, 29)},
+    }
+
+
+def test_toml_writes_dates_and_times_as_its_own_literals(tmp_path):
+    write_toml(tmp_path / "x.toml", WHEN)
+    text = (tmp_path / "x.toml").read_text()
+    assert "day = 2026-10-17\n" in text and "at = 2026-10-17T12:30:05\n" in text and "clock = 02:15:00\n" in text
+    assert "exact = 2026-10-17T12:30:05.123456+02:00\n" in text and "days = [2026-01-01, 2026-12-31]\n" in text
+    assert read_toml(tmp_path / "x.toml") == WHEN                   # the same objects back, offsets included
+
+
+def test_toml_writes_a_time_with_an_offset_as_text(tmp_path):
+    write_toml(tmp_path / "x.toml", {"clock": time(2, 15, tzinfo = timezone.utc)})
+    assert read_toml(tmp_path / "x.toml") == {"clock": "02:15:00+00:00"}       # TOML's time has no offset
+
+
+def test_yaml_writes_dates_bare_and_a_time_quoted(tmp_path):
+    pytest.importorskip("yaml")
+    write_yaml(tmp_path / "x.yaml", WHEN)
+    text = (tmp_path / "x.yaml").read_text()
+    assert "day: 2026-10-17\n" in text and 'clock: "02:15:00"\n' in text and "  - 2026-01-01\n" in text
+    assert read_yaml(tmp_path / "x.yaml") == {**WHEN, "clock": "02:15:00"}    # a date and a datetime back
+
+
+def test_json_and_ini_write_dates_as_iso_text(tmp_path):
+    write_json(tmp_path / "x.json", WHEN)
+    assert read_json(tmp_path / "x.json") == {
+        "day": "2026-10-17", "at": "2026-10-17T12:30:05", "exact": "2026-10-17T12:30:05.123456+02:00",
+        "utc": "2026-10-17T12:30:00+00:00", "clock": "02:15:00", "days": ["2026-01-01", "2026-12-31"],
+        "in": {"day": "2000-02-29"}}
+    write_ini(tmp_path / "x.ini", WHEN)
+    assert read_ini(tmp_path / "x.ini") == {
+        "day": "2026-10-17", "at": "2026-10-17T12:30:05", "exact": "2026-10-17T12:30:05.123456+02:00",
+        "utc": "2026-10-17T12:30:00+00:00", "clock": "02:15:00", "days": "2026-01-01, 2026-12-31",
+        "in": {"day": "2000-02-29"}}
+
+
+def test_json_still_refuses_what_is_no_configuration_value(tmp_path):
+    with pytest.raises(TypeError, match = "can't be written"):
+        write_json(tmp_path / "x.json", {"a": object()})
+    assert not (tmp_path / "x.json").exists()
+
+
+# ── found by review ─────────────────────────────────────────────────────────
+
+def test_keys_that_are_no_text_are_written_as_loading_reads_them_back(tmp_path):
+    class Colour(Enum):
+        RED = "red"
+
+    data = {"by_number": {1: "a", 2.5: "b"}, "by_flag": {True: "yes"}, "by_enum": {Colour.RED: 1},
+            "by_day": {date(2026, 1, 1): 1}, "by_id": {UUID(int = 1): 1}}
+    write_json(tmp_path / "x.json", data)
+    assert read_json(tmp_path / "x.json") == {
+        "by_number": {"1": "a", "2.5": "b"}, "by_flag": {"true": "yes"}, "by_enum": {"red": 1},
+        "by_day": {"2026-01-01": 1}, "by_id": {"00000000-0000-0000-0000-000000000001": 1}}
+    write_toml(tmp_path / "x.toml", data)
+    assert read_toml(tmp_path / "x.toml") == read_json(tmp_path / "x.json")
+
+
+def test_a_file_that_was_there_is_kept_when_the_text_cannot_be_encoded(tmp_path):
+    for fmt in ("json", "toml", "ini"):                             # YAML writes it as an escape ("\\uDCFF")
+        path = tmp_path / f"keep.{fmt}"
+        path.write_text("as it was")
+        with pytest.raises(UnicodeEncodeError):
+            WRITERS[fmt](path, {"s": "bad\udcff"})                  # a lone surrogate is no UTF-8
+        assert path.read_text() == "as it was"
+
+
+def test_files_are_written_with_unix_line_ends(tmp_path):
+    write_toml(tmp_path / "x.toml", {"a": 1, "b": {"c": 2}})
+    assert (tmp_path / "x.toml").read_bytes() == b"a = 1\n\n[b]\nc = 2\n"
+
+
+def test_ini_messages_never_hold_the_value(tmp_path):
+    for data in ({"s": " hunter2"}, {"l": ["hunter2,x"]}, {"s": "hunter2\nx"}):
+        with pytest.raises(ValueError) as info:
+            write_ini(tmp_path / "x.ini", data)
+        assert "hunter2" not in str(info.value)
+
+
+def test_ini_refuses_a_list_of_one_empty_text(tmp_path):
+    with pytest.raises(ValueError, match = "empty"):
+        write_ini(tmp_path / "x.ini", {"l": [""]})
+    write_ini(tmp_path / "x.ini", {"l": ["", "a"]})                 # two items: the comma tells them apart
+    assert read_ini(tmp_path / "x.ini")["l"] == ", a"

@@ -1,0 +1,13 @@
+# The first layer: everything, with the values every environment starts from.
+name = "storefront"
+debug = true
+hosts = ["localhost"]
+
+[db]
+host = "localhost"
+port = 5432
+user = "dev"
+
+[db.pool]
+min_size = 1
+max_size = 5
