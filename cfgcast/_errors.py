@@ -18,11 +18,12 @@ unknown key's value not at all: nothing says it isn't a secret.
 
 `ConfigWarning` says which unknown keys a lenient schema (`strict = False`) ignored, in the same shape.
 """
-from types import UnionType
-from typing import Annotated, Any, Callable, TypeAliasType, Union, get_args, get_origin
+from typing import Any, Callable, Sequence
 from enforced import InvalidDataError, InvalidDataWarning
-from enforced.data_types import SecretStr
-from enforced._formatting_tool import formatter
+from clitint import formatter
+from ._hints import mentions_secret
+import inspect
+import os
 
 #* {"type", "loc", "msg", "input", "ctx"}; loc starts with the file, then the key path: ("app.toml", "db", "port").
 type Problem = dict[str, Any]
@@ -39,15 +40,19 @@ class ConfigError(InvalidDataError, ValueError):
 
     #* What a ConfigError made by enforced has (it never runs __init__): see the module's docstring.
     file: str | None = None
+    files: tuple[str, ...] = ()
     schema: type | None = None
     entries: list[Problem] | None = None
 
-    def __init__(self, file: str, schema: type, problems: list[Problem]) -> None:
-        self.file = str(file)
+    def __init__(self, file: str | os.PathLike[str] | Sequence[str], schema: type, problems: list[Problem]) -> None:
+        #* Several sources (layered files, the environment): `files` has each, `file` all of them as one text,
+        #* and every line of the message starts with the source its value came from.
+        self.files = _sources(file)
+        self.file = ", ".join(self.files)
         self.schema = schema
         self.entries = problems
         super().__init__(
-            _message(problems, f"in {self.file} for {getattr(schema, '__name__', schema)}", True),
+            _message(problems, f"in {self.file} for {getattr(schema, '__name__', schema)}", True, len(self.files) > 1),
             context = "config"
             )
         return
@@ -82,7 +87,7 @@ class ConfigError(InvalidDataError, ValueError):
     def __reduce__(self) -> tuple[Any, ...]:
         if self.entries is None:
             return InvalidDataError.__reduce__(self)              # its message (masked) and problems, as this class
-        return (type(self), (self.file, self.schema, self.entries))
+        return (type(self), (self.files, self.schema, self.entries))
 
 
 class ConfigWarning(InvalidDataWarning):
@@ -93,8 +98,9 @@ class ConfigWarning(InvalidDataWarning):
     it into an error (not `python -W`, read before an installed package can be imported).
     """
 
-    def __init__(self, file: str, schema: type, ignored: list[Problem]) -> None:
-        self.file = str(file)
+    def __init__(self, file: str | os.PathLike[str] | Sequence[str], schema: type, ignored: list[Problem]) -> None:
+        self.files = _sources(file)
+        self.file = ", ".join(self.files)
         self.schema = schema
         self.entries = ignored
         super().__init__(self._text(lambda text, _: str(text)))
@@ -105,16 +111,34 @@ class ConfigWarning(InvalidDataWarning):
 
     def _text(self, style: Callable[[Any, str], str]) -> str:   # style is the internal formatter of enforced
         count = len(self.entries)
+        located = _located(self.schema)
         head = (f"{style(count, 'bold_red')} unknown key{'s' if count != 1 else ''} ignored in {style(self.file, 'cyan')} "
-                f"for {style(getattr(self.schema, '__name__', self.schema), 'bold_yellow')}:")
-        return "\n".join([head, *(f"    -> {style(_where(p['loc'], True), 'bold_red')}" for p in self.entries)])
+                f"for {style(getattr(self.schema, '__name__', self.schema), 'bold_yellow')}"
+                f"{f' ({style(located, 'cyan')})' if located else ''}:")
+        layered = len(self.files) > 1
+        return "\n".join([head, *(f"    -> {_from(p, layered)}{style(_where(p['loc'], True), 'bold_red')}" for p in self.entries)])
 
     def errors(self, *, include_input: bool = True, include_context: bool = True) -> list[Problem]:
         """The ignored keys, in the shape of `ConfigError.errors()`. There is never an `input`."""
         return _copies(self.entries, include_input, include_context)
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (type(self), (self.file, self.schema, self.entries))
+        return (type(self), (self.files, self.schema, self.entries))
+
+
+def _located(schema: Any) -> str | None:
+    """
+    Where the class is written, as `file_path:line` (its first line, the decorator's: as `inspect` says), or None where that
+    can't be found: a class made by `type()`, in a REPL, or from a file that is gone.
+    """
+    line = vars(schema).get("__firstlineno__") if isinstance(schema, type) else None    # 3.13+: set by the compiler
+    if not isinstance(line, int):
+        return None
+    try:
+        file = inspect.getsourcefile(schema)
+    except (TypeError, OSError):
+        return None
+    return f"{file}:{line}" if file else None   # colon format allows editors like VSCode to jump to the line directly
 
 
 def _copies(entries: list[Problem], include_input: bool, include_context: bool) -> list[Problem]:
@@ -128,31 +152,6 @@ def _copies(entries: list[Problem], include_input: bool, include_context: bool) 
             entry.pop("ctx", None)
         out.append(entry)
     return out
-
-
-# ── what is a secret ────────────────────────────────────────────────────────
-
-def members(hint: Any) -> list[Any]:
-    """The annotations a hint stands for, `Annotated` and aliases taken off, each union member."""
-    if isinstance(hint, TypeAliasType):
-        return members(hint.__value__)
-    if get_origin(hint) is Annotated:
-        return members(get_args(hint)[0])
-    if get_origin(hint) in (Union, UnionType):
-        return [m for member in get_args(hint) for m in members(member)]
-    return [hint]
-
-
-def mentions_secret(hint: Any) -> bool:
-    """Whether a `SecretStr` is anywhere in the annotation (`SecretStr`, `list[SecretStr] | None` ...)."""
-    if hint is None:
-        return False
-    for member in members(hint):
-        if isinstance(member, type) and issubclass(member, SecretStr):
-            return True
-        if any(mentions_secret(arg) for arg in get_args(member) if not isinstance(arg, (str, int, float, bool))):
-            return True
-    return False
 
 
 # ── the message ─────────────────────────────────────────────────────────────
@@ -185,7 +184,19 @@ def _where(loc: list[Any] | tuple[Any, ...], has_file: bool) -> str:
     return text or ("(the whole file)" if has_file else "(the call)")
 
 
-def _message(problems: list[Problem], where: str, has_file: bool) -> str:
+def _sources(file: str | os.PathLike[str] | Sequence[str]) -> tuple[str, ...]:
+    """The sources of a load as texts: one file, or each layer."""
+    if isinstance(file, (str, os.PathLike)):
+        return (os.fspath(file),)
+    return tuple(str(name) for name in file)
+
+
+def _from(problem: Problem, layered: bool) -> str:
+    """`prod.toml: ` in front of a line, where a load had several sources: the one this value came from."""
+    return f"{problem['loc'][0]}: " if layered and problem["loc"] else ""
+
+
+def _message(problems: list[Problem], where: str, has_file: bool, layered: bool = False) -> str:
     count = len(problems)
     head = f"{count} problem{'s' if count != 1 else ''} {where}:"
-    return "\n".join([head, *(f"    {_where(p['loc'], has_file)}: {p['msg']}" for p in problems)])
+    return "\n".join([head, *(f"    {_from(p, layered)}{_where(p['loc'], has_file)}: {p['msg']}" for p in problems)])
