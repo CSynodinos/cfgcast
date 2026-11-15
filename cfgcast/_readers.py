@@ -6,20 +6,10 @@ A file that isn't valid in its format raises what its parser raises (`json.JSOND
 `tomllib.TOMLDecodeError`, `configparser.Error`, `yaml.YAMLError`); a file whose top level
 isn't a mapping, or an ini file whose sections clash, is a `ValueError`.
 """
-from typing import (
-    Annotated,
-    Any,
-    Literal,
-    TypeAliasType,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-    )
-from types import NoneType, UnionType
+from typing import Any, Literal, get_type_hints
+from ._hints import is_list, section_of, split_list
 import collections.abc
 import configparser
-import dataclasses
 import json
 import os
 import re
@@ -48,7 +38,8 @@ def read_ini(file: str | os.PathLike[str], schema: type | None = None) -> RawCon
     `[DEFAULT]` holds the top-level keys, and is not copied into the other sections. A dotted
     section is nesting (`[db.replica]`: `replica` inside `db`). A value is split on commas
     into a list where the schema's field is a `list[...]` (`hosts = a, b, c`; `hosts =` is an
-    empty list). Interpolation is off: a `%` is a `%`.
+    empty list). Interpolation is off: a `%` is a `%`. A field that is a list of sections
+    (`servers: list[Server]`) can't be given in ini: a `ValueError` that names it.
     """
     #* default_section names a section nobody writes, so [DEFAULT] is an ordinary one: its keys
     #* are not copied into the others (they are the top-level keys).
@@ -69,13 +60,13 @@ def read_ini(file: str | os.PathLike[str], schema: type | None = None) -> RawCon
             existing = target.setdefault(part, {})
             if not isinstance(existing, dict):
                 raise ValueError(
-                    f"{os.fspath(file)}: [{section}] clashes with the key "
-                    f"{'.'.join(parts[:depth + 1])} = {existing!r}"
+                    f"{os.fspath(file)}: [{section}] clashes with the key "      # never its value: it may be a secret
+                    f"{'.'.join(parts[:depth + 1])}"
                     )
             target = existing
         _merge(target, values, tuple(parts), file)
     if schema is not None:
-        _split_lists(data, schema)
+        _split_lists(data, schema, file)
     return data
 
 
@@ -112,24 +103,6 @@ def _merge(target: RawConfigData, values: dict[str, str], where: tuple[str, ...]
         target[key] = value
 
 
-_LISTS = (list, tuple, set, frozenset, collections.abc.Sequence, collections.abc.MutableSequence,
-          collections.abc.Set, collections.abc.MutableSet, collections.abc.Collection, collections.abc.Iterable)
-
-
-def _bare(hint: Any) -> collections.abc.Iterator[Any]:
-    """The annotations a hint stands for: `Annotated` and `| None` taken off, each union member."""
-    if get_origin(hint) is Annotated:
-        yield from _bare(get_args(hint)[0])
-    elif get_origin(hint) in (Union, UnionType):
-        for member in get_args(hint):
-            if member is not NoneType:
-                yield from _bare(member)
-    elif isinstance(hint, TypeAliasType):                         # `type Hosts = list[str]`
-        yield from _bare(hint.__value__)
-    else:
-        yield hint
-
-
 def _hints(schema: type) -> dict[str, Any]:
     try:
         return get_type_hints(schema, include_extras = True)
@@ -137,19 +110,32 @@ def _hints(schema: type) -> dict[str, Any]:
         return {}
 
 
-def _split_lists(data: RawConfigData, schema: type) -> None:
-    """In place: the text of each field the schema types as a list, split on commas, in every section."""
+def _split_lists(data: RawConfigData, schema: type, file: str | os.PathLike[str], path: tuple[str, ...] = ()) -> None:
+    """
+    In place: the text of each field the schema types as a list, split on commas, in every section (also
+    the sections of a `dict[str, Section]`, which ini writes as `[field.name]`). A `ValueError` for a
+    list of sections given as text: ini can't hold one.
+    """
     for name, hint in _hints(schema).items():
         if name not in data:
             continue
-        value = data[name]
-        for bare in _bare(hint):
-            if isinstance(value, dict) and isinstance(bare, type) and dataclasses.is_dataclass(bare):
-                _split_lists(value, bare)                           # a section
-                break
-            if isinstance(value, str) and (bare in _LISTS or get_origin(bare) in _LISTS):
-                data[name] = [item.strip() for item in value.split(",")] if value.strip() else []
-                break
+        value, found = data[name], section_of(hint)
+        if found is None:
+            if isinstance(value, str) and is_list(hint):
+                data[name] = split_list(value)
+            continue
+        kind, section = found
+        if kind == "one" and isinstance(value, dict):
+            _split_lists(value, section, file, (*path, name))
+        elif kind == "dict" and isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, dict):
+                    _split_lists(item, section, file, (*path, name, key))
+        elif kind in ("list", "tuple") and isinstance(value, str):
+            raise ValueError(
+                f"{os.fspath(file)}: {'.'.join((*path, name))} is a list of sections ({section.__name__}), "
+                f"which ini can't hold: use JSON, TOML or YAML for this configuration"
+                )
 
 
 _YAML: tuple[Any, Any] | None = None

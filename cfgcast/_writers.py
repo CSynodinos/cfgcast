@@ -11,9 +11,14 @@ as its number, and a `SecretStr` as its real text, never the mask (`str()` of it
 An `Enum` is written as its value; a path, a `Decimal` and a `UUID` as text. Anything else is a
 `TypeError` before the file is opened: a file is written whole or not at all.
 
+Dates and times (`date`, `datetime`, `time`) are written so that loading gives them back: TOML as its
+own literals, YAML as a bare timestamp (a `time` quoted: YAML has none), JSON and ini as ISO 8601 text,
+which coercion reads. A `time` with an offset is ISO text in TOML too (TOML's time has no offset).
+
 `None`: JSON and YAML write `null`; TOML and ini have no null, so the key is left out, and
 loading the file gives the field its code default (the same where that default is `None`).
 """
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from pathlib import PurePath
@@ -28,7 +33,7 @@ import re
 
 def write_json(file: str | os.PathLike[str], data: RawConfigData, *, indent: int | None = 2) -> None:
     """`json.dumps` (`ensure_ascii = False`, `allow_nan = False`: NaN is no JSON), UTF-8."""
-    _save(file, json.dumps(_plain(data), indent = indent, ensure_ascii = False, allow_nan = False) + "\n")
+    _save(file, json.dumps(_plain(data), indent = indent, ensure_ascii = False, allow_nan = False, default = _iso) + "\n")
 
 
 def write_toml(file: str | os.PathLike[str], data: RawConfigData) -> None:
@@ -101,20 +106,42 @@ def _plain(value: Any) -> Any:
         return float(value)
     if isinstance(value, (PurePath, Decimal, UUID)):
         return str(value)
+    if isinstance(value, (date, time)):                             # a datetime is a date: each writer has its own form
+        return value
     if isinstance(value, dict):
-        for key in value:
-            if not isinstance(key, str):
-                raise TypeError(f"a key of a configuration must be text, got {key!r}")
-        return {str.__str__(key): _plain(item) for key, item in value.items()}
+        return {_key(key): _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_plain(item) for item in value]
     raise TypeError(f"{type(value).__name__} can't be written to a configuration file: {value!r}")
 
 
+def _key(key: Any) -> str:
+    """A dictionary's key as text, which is all a file has: a number, an `Enum`, a `UUID` or a date as loading reads it back."""
+    plain = _plain(key)
+    if isinstance(plain, str):
+        return plain
+    if isinstance(plain, bool):
+        return "true" if plain else "false"
+    if isinstance(plain, (int, float)):
+        return repr(plain)
+    if isinstance(plain, (date, time)):
+        return plain.isoformat()
+    raise TypeError(f"a key of a configuration must be text, a number or a date, got {key!r}")
+
+
 def _save(file: str | os.PathLike[str], text: str) -> None:
-    #* The text is made in full before the file is opened: an error leaves no half-written file.
-    with open(file, "w", encoding = "utf-8", newline = "\n") as stream:
-        stream.write(text)
+    #* The text is made in full, and encoded, before the file is opened: an error leaves no half-written
+    #* file, and one that was there stays as it was (opening it for writing empties it).
+    encoded = text.encode("utf-8")
+    with open(file, "wb") as stream:
+        stream.write(encoded)
+
+
+def _iso(value: Any) -> str:
+    """A date, a datetime or a time as ISO 8601 text (`json.dumps` calls this for what it doesn't know: only those)."""
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    raise TypeError(f"{type(value).__name__} can't be written to a configuration file: {value!r}")
 
 
 def _number(value: int | float, inf: str, nan: str) -> str:
@@ -156,6 +183,10 @@ def _toml_value(value: Any, where: str) -> str:
         return _number(value, "inf", "nan")
     if isinstance(value, str):
         return _toml_string(value)
+    if isinstance(value, time) and value.tzinfo is not None:        # TOML's time is local: with an offset, as text
+        return _toml_string(value.isoformat())
+    if isinstance(value, (date, time)):
+        return value.isoformat()                                    # RFC 3339, as TOML writes them
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item, where) for item in value) + "]"
     if isinstance(value, dict):                                     # a table inside a list that isn't all tables
@@ -196,8 +227,10 @@ def _ini_text(value: Any, where: str) -> str:
         if "\n" in value or "\r" in value:
             raise ValueError(f"{where}: ini can't hold a value with a line break")
         if value != value.strip():
-            raise ValueError(f"{where}: ini drops the spaces around a value, so {value!r} would change")
+            raise ValueError(f"{where}: ini drops the spaces around a value, so this one would change")
         return value
+    if isinstance(value, (date, time)):
+        return value.isoformat()
     raise ValueError(f"{where}: ini can't hold a {type(value).__name__} here")
 
 
@@ -212,12 +245,16 @@ def _ini_section(lines: list[str], name: str, values: dict[str, Any], path: tupl
         if isinstance(value, list):
             items = []
             for item in value:
-                if isinstance(item, (dict, list)) or item is None:
+                if isinstance(item, dict):
+                    raise ValueError(f"{where}: ini can't hold a list of sections: use JSON, TOML or YAML for this configuration")
+                if isinstance(item, list) or item is None:
                     raise ValueError(f"{where}: ini can't hold a list of {type(item).__name__}")
                 text = _ini_text(item, where)
                 if "," in text:
-                    raise ValueError(f"{where}: an item of an ini list can't hold a comma ({text!r})")
+                    raise ValueError(f"{where}: an item of an ini list can't hold a comma")
                 items.append(text)
+            if items == [""]:
+                raise ValueError(f"{where}: ini can't tell a list of one empty text from an empty list")
             lines.append(f"{key} = {', '.join(items)}".rstrip())
         else:
             lines.append(f"{key} = {_ini_text(value, where)}".rstrip())
@@ -251,7 +288,7 @@ _YAML_SPECIAL = re.compile(r"""(?x)
       | [-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?
       | [-+]?\.(?:inf|Inf|INF) | \.(?:nan|NaN|NAN)
       | [0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt ].*)?
-      | <<
+      | << | =
     )""")
 _YAML_FIRST = set("-?:,[]{}#&*!|>'\"%@`")
 
@@ -264,7 +301,14 @@ def _yaml_string(text: str) -> str:
         )
     if plain:
         return text
-    return json.dumps(text, ensure_ascii = False)                   # a JSON string is a YAML double-quoted one
+    #* A JSON string is a YAML double-quoted one, but for what JSON leaves as it is and YAML doesn't take
+    #* (DEL, NEL, a line separator, a BOM ...): those as YAML's escapes.
+    return "".join(char if char.isprintable() else _yaml_escape(char) for char in json.dumps(text, ensure_ascii = False))
+
+
+def _yaml_escape(char: str) -> str:
+    code = ord(char)
+    return f"\\x{code:02X}" if code <= 0xFF else f"\\u{code:04X}" if code <= 0xFFFF else f"\\U{code:08X}"
 
 
 def _yaml_scalar(value: Any) -> str:
@@ -277,6 +321,10 @@ def _yaml_scalar(value: Any) -> str:
         if "e" in text and "." not in text:                         # YAML 1.1 (PyYAML) reads 1e+16 as text: 1.0e+16
             text = text.replace("e", ".0e", 1)
         return text
+    if isinstance(value, time):
+        return json.dumps(value.isoformat())                        # bare, 12:30:00 is a number to YAML 1.1 (base 60)
+    if isinstance(value, date):
+        return value.isoformat()                                    # a bare timestamp: read back as a date / datetime
     return _yaml_string(value)
 
 
