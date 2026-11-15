@@ -1,0 +1,26 @@
+{
+  "name": "fleet",
+  "servers": [
+    {
+      "host": "web-1.internal",
+      "port": 8080,
+      "workers": 4,
+      "open_ports": [80, 443],
+      "tls": {"enabled": true, "cert_path": "/etc/ssl/web-1.pem", "key_path": "/etc/ssl/web-1.key"}
+    },
+    {
+      "host": "web-2.internal",
+      "port": 8081,
+      "workers": 2,
+      "open_ports": [],
+      "tls": {"enabled": false, "cert_path": "", "key_path": ""}
+    },
+    {
+      "host": "db-1.internal",
+      "port": 5432,
+      "workers": 8,
+      "open_ports": [5432],
+      "tls": {"enabled": true, "cert_path": "/etc/ssl/db-1.pem", "key_path": "/etc/ssl/db-1.key"}
+    }
+  ]
+}

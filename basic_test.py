@@ -70,6 +70,12 @@ class Server:
 
 
 @cfg
+class Fleet:
+    name: str
+    servers: list[Server]                                   # a list of sections: TOML's [[servers]]
+
+
+@cfg
 class Rotation:
     max_mb: int
     backups: int
@@ -137,16 +143,25 @@ class BadComplexCfg:
     monitoring: Monitoring
 
 
-if __name__ == "__main__":
+def main():
     config = load_cfg(
         file = CFGS / "complex.ini",
         schema = ComplexCfg
         )
     print(config)
 
-    config_with_unknown_key = load_cfg(
+    load_cfg(
         file = CFGS / "complex_bad.ini",
         schema = BadComplexCfg
         )
 
-    # print(config_with_unknown_key)
+    fleet = load_cfg(
+        file = CFGS / "fleet.yaml",
+        schema = Fleet
+        )
+
+    print(fleet)
+
+
+if __name__ == "__main__":
+    main()
