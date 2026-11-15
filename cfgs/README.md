@@ -11,6 +11,14 @@ same data, and so does every `complex.*`, so loading any of them gives an equal 
 | ini | `simple.ini`, `complex.ini` |
 | cfg | `simple.cfg`, `complex.cfg` (the ini format; `:` delimiters and `#` comments) |
 
+Since 2026-11-15, one file per rule built then (the same data in every format of a set):
+
+| files | what they hold |
+|---|---|
+| `fleet.json` / `.toml` / `.yaml` | a list of sections, each with a section of its own (`servers: list[Server]`, `[[servers]]` and `[servers.tls]` in TOML). No ini: it can't hold one |
+| `schedule.*` (all five) | a `date`, a `time` and a `datetime` (TOML's own literals, YAML's bare date, text elsewhere), and a dictionary of sections (`[regions.eu]`) |
+| `layers/base.toml`, `prod.yaml`, `local.ini` | three layers of one configuration, loaded in that order: a section merged, a value and a list replaced |
+
 ## Format traps in these files
 
 - **YAML**
@@ -37,9 +45,7 @@ Left out so that all formats can hold the same data. Each needs its own example 
 
 - **`null` / `None`**: JSON and YAML have it, TOML and ini don't (the writer leaves the key out; loading gives
   the field its code default).
-- **A list of tables** (`[[servers]]` in TOML, a list of objects in JSON / YAML): ini can't hold it.
-- **TOML dates and times** (`2026-10-17T12:00:00Z` is a `datetime`): JSON and YAML dates are strings.
 - **A `%` in a value**: `configparser` interpolation.
 - **Multi-line strings, anchors and aliases (`&` / `*`) in YAML**, `[DEFAULT]` keys that clash with a section key.
 - **A key the schema doesn't name** (`strict` on and off), a **missing key**, a **wrong type**: the invalid
-  files are made on the fly by `test_formats.py`, not kept here.
+  files are made on the fly by `tests/simulation.py`, not kept here.

@@ -6,7 +6,7 @@
 
 ## Decisions
 
-- **Formats:** JSON, TOML, ini (`.ini` and `.cfg`, one format), YAML. No XML. No env for now (use cases to be thought through).
+- **Formats:** JSON, TOML, ini (`.ini` and `.cfg`, one format), YAML. No XML. Environment variables since 2026-11-15 (feature 4 below).
 - **`load_cfg(file, schema, cfg_type = "infer")`**: `schema` is a `@cfg` class; it returns an instance of it
   (overloads `type[T] -> T`). `cfg_type` is a `Literal`; `"infer"` reads the suffix, and an unknown or missing
   suffix is an error that says to pass `cfg_type`.
@@ -93,9 +93,10 @@ config in a workflow (one per run, per environment) without touching the origina
 - YAML: a string YAML 1.1 would read as something else (`no`, `on`, `08`, `1e3`, `null`, `~`) is
   written quoted, so other YAML readers in a workflow get the string too.
 
-## Next features (planned 2026-10-18; built in this order)
+## Next features (planned 2026-10-18; 1 to 4 built on 2026-11-15, 5 on 2026-10-22)
 
-What users will ask for first. 1 and 2 stand alone; 4 is built on 3.
+What users will ask for first. 1 and 2 stand alone; 4 is built on 3. Each keeps its plan below, with
+"Built" saying what was decided while building it. What is still open is gathered in "Open" at the end.
 
 ### 1. Lists and dicts of sections
 
@@ -114,6 +115,15 @@ class App:
 - The writers already write lists of tables (`[[servers]]`); `to_dict` already turns configurations in lists
   into dictionaries.
 
+**Built.** `_hints.section_of` says how a field holds sections (`one` / `list` / `tuple` / `dict`), and `_build`,
+`_Sections`, `read_ini` and `read_env` all ask it. Decided on the way:
+
+- A value that isn't what the field takes (text for a `list[Server]`) is one `section` problem, **without an
+  `input`** (it was shown before, for one section too): what stands in a section's place may hold its secrets.
+- ini *holds* a dictionary of sections (`[by_region.eu]`), so only the list is refused. Loading: a `ValueError`
+  from `read_ini` naming the field, not a `ConfigError` (the file can't say it at all; it is not a wrong value).
+- A union with a section in it (`Db | str`, `list[Db | None]`) is taken as the section only: see "Open".
+
 ### 2. Dates and times
 
 - enforced first (the owner's decision): `coerce` already parses ISO 8601 text into `datetime` / `date` /
@@ -123,6 +133,9 @@ class App:
   JSON and ini as ISO text. `_plain` lets `date` / `datetime` / `time` through to the writers.
 - Not now: durations (`timedelta`, "30s", "5m": not ISO; a `Duration` model later), Unix timestamps.
 - Open (enforced): a `date` field accepts a `datetime` (it is a subclass), and keeps it as one.
+
+**Built.** TOML: its own literals; a `time` with an offset has none, and is quoted ISO text. YAML: a bare date
+or timestamp, a `time` quoted (YAML has no time). JSON and ini: ISO text.
 
 ### 3. Layering: several files, the later ones win
 
@@ -138,6 +151,14 @@ app = load_cfg(["base.toml", "prod.toml"], App)
   unknown key the file that has it. This is the one change to existing code.
 - Open: a layer that may be absent (a local override file). `optional("local.toml")` (a wrapper on that one
   path) or `missing_ok = True` (for every layer of the call).
+
+**Built** (`_sources.py`: `Sources`, `layer`). Decided on the way:
+
+- With more than one source the message says the source per line (`    prod.toml: db.port: ...`) and the head
+  names them all; one file alone reads as before. `ConfigError.files` is the tuple, `file` their text.
+- Every format is worked out before any file is read (a wrong suffix in the last layer is said first), and
+  every file must exist: the absent layer is still open.
+- `App.load` takes the list and `env_prefix` too.
 
 ### 4. Environment variables
 
@@ -156,6 +177,20 @@ app = load_cfg("app.toml", App, env_prefix = "APP_")      # APP_DB__PORT=9090 ->
 - `env: Mapping[str, str] = os.environ` as a parameter, so a test or a workflow hands its own.
 - Not now: `.env` files (one more layer read into a dictionary, when wanted).
 
+**Built** (`_sources.read_env`). Decided on the way:
+
+- One layer per variable, in the order of their names, so each problem names its own variable (`loc[0]`); the
+  head of an error names the environment as `APP_*`.
+- **A dictionary field takes a JSON object** (text starting with `{`), next to the list's JSON array: not in
+  the plan, added because a `dict[str, float]` had no way in otherwise.
+- Text that starts as JSON and isn't: a `ValueError` naming the variable, with the parser's message and
+  position, never the text (it may be a secret).
+- `env = None` stands for `os.environ` (a default of `os.environ` itself would show in the signature and be
+  bound at import); `env` without `env_prefix` is a `TypeError`. `load_cfg([], App, env_prefix = ...)` is
+  allowed: the environment alone.
+- A variable reaches a field of a section, not an item of a list or dictionary of sections (`APP_SERVERS__0__PORT`
+  is ignored like any unknown variable).
+
 ### Decided
 
 - Dates: enforced first. Lists in layers: replaced. The env prefix: on `load_cfg` first.
@@ -168,3 +203,29 @@ Planned with enforced's `error =` option, in `/mnt/d/dev/enforced/PLAN_error_typ
 too, and `ConfigError` works when enforced makes it without `__init__` (class-attribute defaults for `file`,
 `schema` and `entries`). Do it after enforced's part is built. Includes masking a secret's input in
 `ConfigError.errors()` for both doors.
+
+## Code review of 2026-11-15
+
+After 1 to 4 were built. Fixed, each with a test ("found by review" in the tests):
+
+- `_save` opened the file before the text was encoded: text that isn't UTF-8 (a lone surrogate) left an empty
+  file where a good one was. It encodes first now.
+- `to_dict` / `write` took `init = False` fields, which `from_dict` then refused as unknown.
+- Messages that showed a value: ini's `[DEFAULT]` clash on reading, and the ini writer's refusals (a line
+  break, surrounding spaces, a comma in a list item). `write` gives a `SecretStr` as real text, so these were secrets.
+- YAML: a bare `=` (the 1.1 value tag) and non-printable characters (DEL, NEL, a lone surrogate) are quoted / escaped.
+- A key of a `dict` field that isn't text (`dict[int, str]`) broke the TOML, ini and YAML writers: written as text now.
+- ini wrote `[""]` as an empty value, which loads as `[]`: refused.
+
+## Open
+
+- **A layer that may be absent**: `optional("local.toml")` or `missing_ok = True` (feature 3). The owner's choice.
+- **An exception of the user's own code** (a `__post_init__` raising something that isn't an `InvalidDataError`)
+  leaves `_build` as it is, and the problems gathered so far are lost. Gather it as a problem of that section,
+  or let it through: a decision, since it is the user's exception.
+- **A union with a section**: `db: Database | str` and `list[Server | None]` are built as sections only, so
+  the other member is reported as "expected a section". `X | None` for one section works.
+- **A full disk in the middle of a write** still leaves half a file: `_save` would have to write a temporary
+  file and `os.replace` it. Rule 4 holds for everything that can be known before the file is opened.
+- `.env` files, `@cfg(env_prefix = ...)`, durations, the static typing of `load` / `from_dict` ("Methods").
+- enforced: a `date` field accepts a `datetime` and keeps it as one.
