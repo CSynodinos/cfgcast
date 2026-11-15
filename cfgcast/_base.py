@@ -33,24 +33,20 @@ A field whose type is another configuration is a nested section / table: the bui
 makes it from the sub-dictionary. enforced checks the leaves; it does not turn a dict into a class.
 """
 from ._errors import ConfigError
+from ._hints import section_of
 from ._readers import CONFIG_READERS, CfgType, RawConfigData
 from ._writers import WRITERS
+from collections.abc import Mapping, Sequence
 from typing import (
-    Annotated,
     Any,
     Callable,
     ClassVar,
     Literal,
     Self,
-    TypeAliasType,
-    Union,
     overload,
     dataclass_transform,
-    get_args,
-    get_origin,
     get_type_hints,
     )
-from types import NoneType, UnionType
 from dataclasses import Field, field, fields, is_dataclass
 import enforced
 import inspect
@@ -76,19 +72,21 @@ class Config:
     functions onto the class it decorates.
     """
     __cfg_options__: ClassVar[tuple[bool, bool]]                    # (strict, frozen)
-    __cfg_sections__: ClassVar[dict[str, type]]                     # field name -> the nested configuration class
+    #* field name -> the nested configuration class, or list[it] / tuple[it, ...] / dict[str, it]
+    __cfg_sections__: ClassVar[dict[str, Any]]
 
     @classmethod
-    def load(cls, file: str | os.PathLike[str], cfg_type: CfgType | Literal["infer"] = "infer", *, show_warnings: bool = True) -> Self:
-        """`load_cfg(file, cls, cfg_type = ..., show_warnings = ...)`."""
-        from ._build import build          # _build imports _base: here, not at the top
-
-        selected_cfg_type = _format_of(file, cfg_type)
-        #* Load data and return an instance of the configuration class from the dictionary output
-        reader = CONFIG_READERS[selected_cfg_type]
-        data: RawConfigData = reader(file, cls) if selected_cfg_type == "ini" else reader(file)
-        #* build, not from_dict: the file goes first in every problem's loc
-        return build(cls, data, os.fspath(file), show_warnings)
+    def load(
+        cls,
+        file: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
+        cfg_type: CfgType | Literal["infer"] = "infer",
+        *,
+        env_prefix: str | None = None,
+        env: Mapping[str, str] | None = None,
+        show_warnings: bool = True) -> Self:
+        """`load_cfg(file, cls, cfg_type = ..., env_prefix = ..., env = ..., show_warnings = ...)`."""
+        from ._load import load          # _load imports _base: here, not at the top
+        return load(cls, file, cfg_type, env_prefix, env, show_warnings)
 
 
     @classmethod
@@ -142,7 +140,8 @@ def write(
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:
-    return {f.name: _copy(getattr(obj, f.name)) for f in fields(obj)}
+    #* The keys of a file: a field(init = False) is worked out by the class, and no key (build refuses it).
+    return {f.name: _copy(getattr(obj, f.name)) for f in fields(obj) if f.init}
 
 
 def _copy(value: Any) -> Any:
@@ -230,7 +229,7 @@ def cfg[T](cls: type[T] | None = None, /, *, strict: bool = True, frozen: bool =
     `coerce` and `deep` are always on and are not options: `"8080"` is read as `8080` for an `int`, and `list[Port]` has every item checked.
 
     Example:
-        >>> from enforced import SecretStr, Port
+        >>> from enforced.data_types import SecretStr, Port
         ... from cfgcast import cfg, load_cfg
         ...
         ... @cfg
@@ -341,30 +340,21 @@ def _not_inherited(cls: type, **_) -> None:
 class _Sections:
     """
     `__cfg_sections__` of a configuration, worked out when it is first read: the fields whose type
-    is another configuration (`Database`, `Database | None`), field name -> that class. Not at
-    decoration: an annotation may name a section written further down, which doesn't exist yet
+    is another configuration (`Database`, `Database | None`), field name -> that class, and the
+    fields that hold several, marked by how: `list[Server]`, `tuple[Server, ...]`, `dict[str, Server]`.
+    Not at decoration: an annotation may name a section written further down, which doesn't exist yet
     then (quoted on 3.13, which evaluates an annotation where it stands). The first read replaces
     this object on the class by the dictionary.
     """
 
-    def __get__(self, _: object, owner: type) -> dict[str, type]:
-        sections: dict[str, type] = {}
+    def __get__(self, _: object, owner: type) -> dict[str, Any]:
+        sections: dict[str, Any] = {}
         hints = get_type_hints(owner, include_extras = True)
         for name in getattr(owner, "__dataclass_fields__", {}):
-            for member in _extract_members(hints.get(name)):
-                if isinstance(member, type) and is_config(member):
-                    sections[name] = member
-                    break
+            found = section_of(hints.get(name))
+            if found is not None and is_config(found[1]):
+                kind, section = found
+                sections[name] = {"one": section, "list": list[section], "tuple": tuple[section, ...],      # type: ignore[valid-type]
+                                  "dict": dict[str, section]}[kind]                                          # type: ignore[valid-type]
         setattr(owner, SECTIONS_ATTR, sections)
         return sections
-
-
-def _extract_members(hint: Any) -> list[Any]:
-    """The annotations a hint stands for: `Annotated` and `type` aliases taken off, each union member."""
-    if isinstance(hint, TypeAliasType):
-        return _extract_members(hint.__value__)
-    if get_origin(hint) is Annotated:
-        return _extract_members(get_args(hint)[0])
-    if get_origin(hint) in (Union, UnionType):
-        return [m for member in get_args(hint) if member is not NoneType for m in _extract_members(member)]
-    return [hint]
