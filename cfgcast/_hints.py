@@ -6,10 +6,59 @@ A section is any dataclass (a `@cfg` class is one): this module is below `_base`
 `@cfg`. `_base._Sections` keeps the `@cfg` ones only.
 """
 from types import UnionType
-from typing import Annotated, Any, Literal, TypeAliasType, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, NamedTuple, TypeAliasType, Union, get_args, get_origin, get_type_hints
 from enforced.data_types import SecretStr
 import collections.abc
 import dataclasses
+
+OPTIONS_ATTR = "__cfg_options__"
+
+
+class Options(NamedTuple):
+    """What `@cfg(...)` was given, kept on the class as `__cfg_options__` and read by name."""
+    strict: bool = True
+    frozen: bool = True
+    env_prefix: str | None = None
+    keys: str | None = None
+
+
+#* Where `cfgcast.field` keeps what it is told, in a field's `metadata`: {"key": ..., "doc": ...}.
+METADATA = "cfgcast"
+KEY_STYLES = ("kebab",)
+
+
+def said(field: Any, what: str) -> Any:
+    """What `cfgcast.field` was told about a field (`"key"`, `"doc"`), None if nothing."""
+    return (field.metadata.get(METADATA) or {}).get(what)
+
+
+def styled(name: str, style: str | None) -> str:
+    """A field's name as the key of a file, in the style of `@cfg(keys = ...)`: `max_size` is `max-size` in kebab, `class_` is `class`."""
+    return name.rstrip("_").replace("_", "-") if style == "kebab" else name
+
+
+def key_of(schema: type, field: Any) -> str:
+    """The key a field has in a file: the `key` of `cfgcast.field`, else its name in the style of the class, else its name."""
+    return said(field, "key") or styled(field.name, options_of(schema).keys)
+
+
+def keys_of(schema: type) -> dict[str, Any]:
+    """The keys of a schema, each with its field: what a file may hold at this level (a `field(init = False)` is no key)."""
+    return {key_of(schema, field): field for field in dataclasses.fields(schema) if field.init}
+
+
+def options_of(schema: type) -> Options:
+    """The options of a `@cfg` class (its own: `vars`, not `getattr`), the defaults for any other dataclass used as a section."""
+    return vars(schema).get(OPTIONS_ATTR, Options())
+
+
+def hints_of(schema: type) -> dict[str, Any]:
+    """The annotations of a schema by field name, `{}` where one can't be resolved (the build then reports it)."""
+    try:
+        return get_type_hints(schema, include_extras = True)
+    except Exception:
+        return {}
+
 
 #* How a field holds sections: one (`db: Database`), a list (`list[Server]`), a tuple
 #* (`tuple[Server, ...]`) or a dictionary of them by name (`dict[str, Server]`).
