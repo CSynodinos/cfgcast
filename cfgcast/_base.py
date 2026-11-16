@@ -16,29 +16,37 @@ class, and so is each of its sections.
 How it works, with no base class for the user to inherit:
 
 1. `@dataclass_transform` on `cfg`: mypy, pyright and editors read the decorated class as a
-   dataclass (`__init__` from the fields, `kw_only`, `frozen`). Nothing happens at run time.
+    dataclass (`__init__` from the fields, `kw_only`, `frozen`). Nothing happens at run time.
 2. `cfg` refuses a class that has a configuration among its bases, then calls
-   `enforced.dataclass(cls, kw_only = True, frozen = ..., coerce = True, deep = True)`. Without
-   slots the standard `dataclasses` changes a class in place and returns it: the class the
-   statement binds is the class that was written, so `isinstance` and pickling just work.
+    `enforced.dataclass(cls, kw_only = True, frozen = ..., coerce = True, deep = True)`. Without
+    slots the standard `dataclasses` changes a class in place and returns it: the class the
+    statement binds is the class that was written, so `isinstance` and pickling just work.
 3. The options are stored on the class (`__cfg_options__`: `strict`, `frozen`, `env_prefix`), and the fields
-   that are sections on `__cfg_sections__`. A class with `__cfg_options__` is a configuration.
+    that are sections on `__cfg_sections__`. A class with `__cfg_options__` is a configuration.
 4. `Loadable` holds the two members every configuration has (`load`, `from_dict`). `cfg` copies
-   them onto the class; the class need not inherit from it, which is how it stays free of a
-   base. `to_dict` and `write` are functions of the module, not members: they take the
-   configuration as their first argument. Checkers don't see members added by a decorator:
-   a class that wants them seen names `Loadable` as its base, or uses `load_cfg` / `from_dict`.
+    them onto the class; the class need not inherit from it, which is how it stays free of a
+    base. `to_dict` and `write` are functions of the module, not members: they take the
+    configuration as their first argument. Checkers don't see members added by a decorator:
+    a class that wants them seen names `Loadable` as its base, or uses `load_cfg` / `from_dict`.
 
 A field whose type is another configuration is a nested section / table: the builder (`_build`)
 makes it from the sub-dictionary. enforced checks the leaves; it does not turn a dict into a class.
 """
 from ._errors import ConfigError, _where
-from ._hints import KEY_STYLES, METADATA, OPTIONS_ATTR, Options, key_of, said, section_of, styled
 from ._sources import SOURCES_ATTR, OptionalFile
 from ._readers import CONFIG_READERS, CfgType, RawConfigData
 from ._writers import TEXTS, WRITERS, plain_json
 from ._template import save_template
-from collections.abc import Mapping, Sequence
+from ._hints import (
+    KEY_STYLES,
+    METADATA,
+    OPTIONS_ATTR,
+    Options,
+    key_of,
+    said,
+    section_of,
+    styled
+    )
 from typing import (
     Any,
     Callable,
@@ -50,7 +58,14 @@ from typing import (
     get_origin,
     get_type_hints,
     )
-from dataclasses import MISSING, Field, field as dataclass_field, fields, is_dataclass
+from dataclasses import (
+    MISSING,
+    Field,
+    field as dataclass_field,
+    fields,
+    is_dataclass
+    )
+from collections.abc import Mapping, Sequence
 import enforced
 import inspect
 import os
@@ -64,7 +79,12 @@ SECTIONS_ATTR = "__cfg_sections__"
 
 #* .cfg is configparser's too: one format, two suffixes.
 SUFFIXES: dict[str, CfgType] = {
-    ".json": "json", ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".yaml": "yaml", ".yml": "yaml",
+    ".json": "json",
+    ".toml": "toml",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".yaml": "yaml",
+    ".yml": "yaml",
     }
 
 
@@ -98,12 +118,18 @@ class Loadable:
         env_file: str | os.PathLike[str] | OptionalFile | None = None,
         section: str | Sequence[str] | None = None,
         overrides: Mapping[str, Any] | None = None,
-        show_warnings: bool = True) -> Self:
-        """`load_cfg(file, cls, ...)`, with every option of it."""
+        show_warnings: bool = True
+        ) -> Self:
         from ._load import load_cfg          # _load imports _base: here, not at the top
         return load_cfg(
-            file, cls, cfg_type, env_prefix = env_prefix, env = env, env_file = env_file, section = section,
-            overrides = overrides, show_warnings = show_warnings)
+            file, cls, cfg_type,
+            env_prefix = env_prefix,
+            env = env,
+            env_file = env_file,
+            section = section,
+            overrides = overrides,
+            show_warnings = show_warnings
+            )
 
     @classmethod
     def from_dict(cls, data: RawConfigData, *, show_warnings: bool = True) -> Self:
@@ -165,32 +191,37 @@ def sources_of(obj: object) -> dict[str, str]:
     A `ValueError` for a configuration that wasn't loaded: one constructed directly (`App(name = "x")`),
     or a section that is its class's default.
     """
+
+    #* Ensure the object is a loaded configuration instance.
     if isinstance(obj, type) or not is_config(obj):
         raise TypeError(f"sources_of takes an instance of a @cfg class, got {obj!r}")
-    held = vars(obj).get(SOURCES_ATTR)
-    if held is None:
+    source_data = vars(obj).get(SOURCES_ATTR)
+    if source_data is None:
         raise ValueError(
             f"sources_of: this {type(obj).__name__} was not loaded (it was constructed directly, or is a default): "
             f"ask the configuration that load_cfg or from_dict returned"
             )
-    sources, base = held
-    found: dict[str, str] = {}
 
-    def walk(value: Any, path: tuple[Any, ...], shown: tuple[Any, ...]) -> None:
+    #* Walk the object recursively to collect the sources of each configuration value.
+    sources, base = source_data
+    found: dict[str, str] = {}
+    def _walk_obj(obj: Any, path: tuple[Any, ...], shown: tuple[Any, ...]) -> None:
+        nonlocal found
         pairs: list[tuple[Any, Any]] | None = None
-        if _is_section(value):
-            pairs = [(key_of(type(value), f), getattr(value, f.name)) for f in fields(value) if f.init]
-        elif isinstance(value, (list, tuple)) and value and all(_is_section(item) for item in value):
-            pairs = list(enumerate(value))
-        elif isinstance(value, dict) and value and all(_is_section(item) for item in value.values()):
-            pairs = list(value.items())
+        if _is_section(obj):
+            pairs = [(key_of(type(obj), f), getattr(obj, f.name)) for f in fields(obj) if f.init]
+        elif isinstance(obj, (list, tuple)) and obj and all(_is_section(item) for item in obj):
+            pairs = list(enumerate(obj))
+        elif isinstance(obj, dict) and obj and all(_is_section(item) for item in obj.values()):
+            pairs = list(obj.items())
         if pairs is None:
             found[_where(shown, False)] = sources.where(path)
             return
         for key, item in pairs:
-            walk(item, (*path, key), (*shown, key))
+            _walk_obj(item, (*path, key), (*shown, key))
+        return
+    _walk_obj(obj, base, ())
 
-    walk(obj, base, ())
     return found
 
 
@@ -241,6 +272,7 @@ def write(
         raise TypeError(f"write takes an instance of a @cfg class, got {obj!r}")
     selected_cfg_type = _format_of(file, cfg_type)
     WRITERS[selected_cfg_type](file, _with(obj, overrides, os.fspath(file), "write"))
+    return
 
 
 def write_template(
@@ -248,7 +280,8 @@ def write_template(
     file: str | os.PathLike[str],
     cfg_type: CfgType | Literal["infer"] = "infer",
     *,
-    overwrite: bool = False) -> None:
+    overwrite: bool = False
+    ) -> None:
     """
     Write a template of `schema` to `file`: every key of the configuration, to be filled in. TOML, YAML
     or ini; JSON is refused (`ValueError`): it has no comments, and a template needs them.
@@ -268,6 +301,7 @@ def write_template(
     if type(overwrite) is not bool:
         raise TypeError(f"write_template: overwrite must be True or False, got {overwrite!r}")
     save_template(schema, file, _format_of(file, cfg_type), overwrite)
+    return
 
 
 def _with(obj: Any, overrides: dict[str, Any] | None, name: str, caller: str) -> dict[str, Any]:
@@ -281,27 +315,39 @@ def _with(obj: Any, overrides: dict[str, Any] | None, name: str, caller: str) ->
         #* Checked by building a new instance (never assigned to obj), then written from that one:
         #* what is written is what the schema would load, converted values included.
         data = _as_dict(build(type(obj), _merged(data, overrides), name))
+
     return data
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:
     #* The keys of a file: a field(init = False) is worked out by the class, and no key (build refuses it).
     #* By the key of the file (`cfgcast.field(key = ...)`, `@cfg(keys = ...)`): what from_dict takes back.
-    return {key_of(type(obj), f): _copy(getattr(obj, f.name)) for f in fields(obj) if f.init}
+    return {key_of(type(obj), f): _copy_node(getattr(obj, f.name)) for f in fields(obj) if f.init}
 
 
-def _copy(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type) and is_config(value):
-        return _as_dict(value)
-    if isinstance(value, list):
-        return [_copy(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_copy(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _copy(item) for key, item in value.items()}
-    if isinstance(value, (set, frozenset)):
-        return type(value)(_copy(item) for item in value)
-    return value
+@enforced.dispatch
+def _copy_node(node) -> Any:
+    """Recursively copy a configuration node, converting configuration instances to dictionaries."""
+    if is_dataclass(node) and not isinstance(node, type) and is_config(node):   # Special case, a configuration instance: convert to dictionary
+        return _as_dict(node)
+    else:
+        return node
+
+@_copy_node.register
+def _(node: list[Any]) -> list[Any]:
+    return [_copy_node(item) for item in node]
+
+@_copy_node.register
+def _(node: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(_copy_node(item) for item in node)
+
+@_copy_node.register
+def _(node: dict[Any, Any]) -> dict[Any, Any]:
+    return {key: _copy_node(item) for key, item in node.items()}
+
+@_copy_node.register
+def _(node: set | frozenset) -> set | frozenset:
+    return type(node)(_copy_node(item) for item in node)
 
 
 def _merged(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -346,10 +392,7 @@ def _format_of(file: str | os.PathLike[str], cfg_type: str) -> CfgType:
         case c if c in CONFIG_READERS:
             return c                                                # type: ignore[return-value]  # one of CfgType
         case _:
-            raise ValueError(
-                f"Unsupported configuration type: {cfg_type!r} "
-                f"(one of {', '.join(CONFIG_READERS)}, or 'infer')"
-                )
+            raise ValueError(f"Unsupported configuration type: {cfg_type!r} (one of {', '.join(CONFIG_READERS)}, or 'infer')")
 
 
 @overload
@@ -414,9 +457,17 @@ def field(
     for name, text in (("key", key), ("doc", doc)):
         if text is not None and not (isinstance(text, str) and text.strip()):
             raise TypeError(f"field: {name} must be text that isn't empty, got {text!r}")
-    return dataclass_field(                                         # type: ignore[call-overload]  # default or default_factory: dataclasses refuses both
-        default = default, default_factory = default_factory, init = init, repr = repr, hash = hash, compare = compare,
-        metadata = {**(metadata or {}), METADATA: {"key": key, "doc": doc}},
+    return dataclass_field(
+        default = default,
+        default_factory = default_factory,
+        init = init,
+        repr = repr,
+        hash = hash,
+        compare = compare,
+        metadata = {
+            **(metadata or {}),
+            METADATA: {"key": key, "doc": doc}
+            },
         )
 
 
@@ -541,6 +592,7 @@ def _create_the_config_object[T](cls: type[T], options: Options) -> type[T]:
 
 def _validate_class_input(cls: Any, options: Options) -> None:
     """Everything `cfg` can't make a configuration of, said before anything is changed."""
+
     if not isinstance(cls, type):
         raise TypeError(f"cfg decorates a class, got {cls!r} (options are keywords: @cfg(strict = False))")
     if is_config(cls):
@@ -549,10 +601,12 @@ def _validate_class_input(cls: Any, options: Options) -> None:
         raise TypeError(f"cfg: {cls.__qualname__} is a dataclass already: write @cfg in place of @dataclass")
     if any(is_config(base) for base in cls.__mro__[1:]):            # also refused at the class statement (_not_inherited)
         raise TypeError(f"cfg: {cls.__qualname__} derives from a configuration; configurations are not inheritable")
+
     own, names = vars(cls), _annotated_names(cls)
     for name in _CONFIG_MEMBERS:
         if name in names or name in own:
             raise TypeError(f"cfg: {cls.__qualname__}.{name}: the name is taken by what cfg adds ({', '.join(_CONFIG_MEMBERS)}); choose another")
+
     #* Two fields with one key: a file could give only one of them.
     taken: dict[str, str] = {}
     for name, hint in names.items():
@@ -563,6 +617,8 @@ def _validate_class_input(cls: Any, options: Options) -> None:
         if key in taken:
             raise TypeError(f"cfg: {cls.__qualname__}: the fields {taken[key]} and {name} have the same key {key!r}")
         taken[key] = name
+
+    return
 
 
 def _annotated_names(cls: type) -> dict[str, Any]:
@@ -608,7 +664,11 @@ class _Sections:
             found = section_of(hints.get(field_.name))
             if found is not None and is_config(found[1]):
                 kind, section = found
-                sections[key_of(owner, field_)] = {"one": section, "list": list[section], "tuple": tuple[section, ...],      # type: ignore[valid-type]
-                                  "dict": dict[str, section]}[kind]                                          # type: ignore[valid-type]
+                sections[key_of(owner, field_)] = {
+                    "one": section,
+                    "list": list[section],
+                    "tuple": tuple[section, ...],
+                    "dict": dict[str, section]
+                    }[kind]
         setattr(owner, SECTIONS_ATTR, sections)
         return sections
