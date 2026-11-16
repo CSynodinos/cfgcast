@@ -24,7 +24,7 @@ class Options(NamedTuple):
 
 #* Where `cfgcast.field` keeps what it is told, in a field's `metadata`: {"key": ..., "doc": ...}.
 METADATA = "cfgcast"
-KEY_STYLES = ("kebab",)
+KEY_STYLES = ("kebab-case",)
 
 
 def said(field: Any, what: str) -> Any:
@@ -33,8 +33,8 @@ def said(field: Any, what: str) -> Any:
 
 
 def styled(name: str, style: str | None) -> str:
-    """A field's name as the key of a file, in the style of `@cfg(keys = ...)`: `max_size` is `max-size` in kebab, `class_` is `class`."""
-    return name.rstrip("_").replace("_", "-") if style == "kebab" else name
+    """A field's name as the key of a file, in the style of `@cfg(keys = ...)`: `max_size` is `max-size` in kebab-case, `class_` is `class`."""
+    return name.rstrip("_").replace("_", "-") if style == "kebab-case" else name
 
 
 def key_of(schema: type, field: Any) -> str:

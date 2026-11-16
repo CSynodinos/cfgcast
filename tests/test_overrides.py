@@ -5,7 +5,7 @@ from enforced.data_types import Port, SecretStr
 from cfgcast import ConfigError, ConfigWarning, cfg, field, load_cfg, parse_overrides, sources_of
 
 
-@cfg(keys = "kebab")
+@cfg(keys = "kebab-case")
 class Pool:
     max_size: int = 1
 

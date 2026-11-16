@@ -428,7 +428,7 @@ def cfg[T](
     strict: bool = True,
     frozen: bool = True,
     env_prefix: str | None = None,
-    keys: Literal["kebab"] | None = None) -> Callable[[type[T]], type[T]]: ...
+    keys: Literal["kebab-case"] | None = None) -> Callable[[type[T]], type[T]]: ...
 @dataclass_transform(
     kw_only_default = True,
     frozen_default = True,
@@ -441,7 +441,7 @@ def cfg[T](
     strict: bool = True,
     frozen: bool = True,
     env_prefix: str | None = None,
-    keys: Literal["kebab"] | None = None) -> Any:
+    keys: Literal["kebab-case"] | None = None) -> Any:
     """
     Make `cls` a configuration schema. Each annotated attribute is a key; its type hint says what the value
     must be, and a default makes the key optional. A field typed as another `@cfg` class is a section.
@@ -454,7 +454,7 @@ def cfg[T](
         env_prefix (str | None): read environment variables with this prefix over the files whenever this
             class is loaded (`load_cfg`, `load`), as `load_cfg(..., env_prefix = ...)` does; that argument wins
             over this one. Only the class that is loaded counts, not a section's. `from_dict` reads none.
-        keys ("kebab" | None): how a field's name is written in a file. `"kebab"`: `max_size` is the key
+        keys ("kebab-case" | None): how a field's name is written in a file. `"kebab-case"`: `max_size` is the key
             `max-size` (and `class_` is `class`), in this class only: a section says its own. A field's
             own `field(key = ...)` wins. Attributes keep their Python names.
 

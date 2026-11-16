@@ -23,7 +23,7 @@ class Pool:
     timeout: float | None = None
 
 
-@cfg(keys = "kebab")
+@cfg(keys = "kebab-case")
 class Database:
     host: str = field(doc = "where the database is\nname or address")
     port: int = 5432

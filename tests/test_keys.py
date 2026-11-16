@@ -1,4 +1,4 @@
-"""`cfgcast.field` and keys that are no Python names: `field(key = ...)`, `@cfg(keys = "kebab")`."""
+"""`cfgcast.field` and keys that are no Python names: `field(key = ...)`, `@cfg(keys = "kebab-case")`."""
 from typing import ClassVar
 import dataclasses
 import warnings
@@ -11,7 +11,7 @@ from cfgcast._base import SECTIONS_ATTR
 from cfgcast._hints import key_of, keys_of, said
 
 
-@cfg(keys = "kebab")
+@cfg(keys = "kebab-case")
 class Pool:
     max_size: int = 10
     min_size: int = field(default = 1, doc = "connections kept open")
@@ -90,7 +90,7 @@ def test_from_dict_and_to_dict_use_the_keys_and_attributes_the_names():
 def test_a_kebab_style_is_of_its_class_only():
     assert "db-pool" in keys_of(App) and "type_" not in keys_of(App) and "api_token" not in keys_of(App)
 
-    @cfg(keys = "kebab")
+    @cfg(keys = "kebab-case")
     class Outer:
         inner_part: App
 
@@ -117,7 +117,7 @@ def test_a_wrong_value_is_reported_at_its_key_and_a_secret_stays_masked():
 
 
 def test_an_ignored_key_under_lenient_names_the_keys():
-    @cfg(strict = False, keys = "kebab")
+    @cfg(strict = False, keys = "kebab-case")
     class Loose:
         max_size: int = 1
 
@@ -162,20 +162,20 @@ def test_two_fields_with_one_key_are_refused():
             b: int = field(key = "x")
 
     with pytest.raises(TypeError, match = "the fields max_size and other have the same key 'max-size'"):
-        @cfg(keys = "kebab")
+        @cfg(keys = "kebab-case")
         class D:
             max_size: int
             other: int = field(key = "max-size")
 
     with pytest.raises(TypeError, match = "the same key 'class'"):
-        @cfg(keys = "kebab")
+        @cfg(keys = "kebab-case")
         class E:
             class_: int
             class__: int
 
 
 def test_a_class_variable_is_no_field_and_takes_no_key():
-    @cfg(keys = "kebab")
+    @cfg(keys = "kebab-case")
     class C:
         max_size_: ClassVar[int] = 3
         max_size: int = 1
@@ -184,7 +184,7 @@ def test_a_class_variable_is_no_field_and_takes_no_key():
 
 
 def test_a_key_style_that_does_not_exist_is_refused():
-    with pytest.raises(TypeError, match = "keys must be None or one of 'kebab'"):
+    with pytest.raises(TypeError, match = "keys must be None or one of 'kebab-case'"):
         cfg(keys = "camel")                                             # type: ignore[call-overload]
 
 

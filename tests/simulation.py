@@ -199,7 +199,7 @@ class Layered:
     db: LayeredDb
 
 
-@cfg(keys = "kebab")                                         # max_size is the key max-size
+@cfg(keys = "kebab-case")                                    # max_size is the key max-size
 class RateLimit:
     max_size: int
     per_user: bool

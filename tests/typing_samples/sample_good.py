@@ -19,7 +19,7 @@ class Plain:
     name: str
 
 
-@cfg(keys = "kebab")
+@cfg(keys = "kebab-case")
 class Pool:
     max_size: int = field(default = 10, doc = "connections at most")
     tags: list[str] = field(default_factory = list, key = "Tags")
