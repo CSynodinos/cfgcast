@@ -7,9 +7,10 @@ A file that isn't valid in its format raises what its parser raises (`json.JSOND
 isn't a mapping, or an ini file whose sections clash, is a `ValueError`.
 """
 from typing import Any, Literal, get_type_hints
-from ._hints import is_list, section_of, split_list
+from ._hints import is_list, keys_of, section_of, split_list
 import collections.abc
 import configparser
+import io
 import json
 import os
 import re
@@ -21,15 +22,13 @@ type CfgType = Literal["json", "toml", "ini", "yaml"]
 
 
 def read_json(file: str | os.PathLike[str]) -> RawConfigData:
-    """`json.load`; a top level that isn't an object is an error."""
-    with open(file, encoding = "utf-8") as stream:
-        return _mapping(json.load(stream), file)
+    """`json.loads`; a top level that isn't an object is an error."""
+    return parse_json(text_of(file, "json"), file)
 
 
 def read_toml(file: str | os.PathLike[str]) -> RawConfigData:
-    """`tomllib.load` (the file opened in binary mode, as tomllib asks)."""
-    with open(file, "rb") as stream:
-        return tomllib.load(stream)                                 # a TOML document is always a table
+    """`tomllib.loads` of the file's bytes as UTF-8 (what `tomllib.load` does)."""
+    return parse_toml(text_of(file, "toml"), file)
 
 
 def read_ini(file: str | os.PathLike[str], schema: type | None = None) -> RawConfigData:
@@ -41,12 +40,48 @@ def read_ini(file: str | os.PathLike[str], schema: type | None = None) -> RawCon
     empty list). Interpolation is off: a `%` is a `%`. A field that is a list of sections
     (`servers: list[Server]`) can't be given in ini: a `ValueError` that names it.
     """
+    return parse_ini(text_of(file, "ini"), file, schema)
+
+
+def read_yaml(file: str | os.PathLike[str]) -> RawConfigData:
+    """
+    `yaml.safe_load` with YAML 1.2 booleans: a `SafeLoader` whose bool resolver matches only
+    `true` / `false`, so `country: no` stays `"no"` (a `bool` field still takes `yes`
+    through enforced's coercion). PyYAML is imported here and only here: a `ModuleNotFoundError`
+    that says `pip install cfgcast[yaml]` when it is missing. An empty file is an empty mapping.
+    """
+    return parse_yaml(text_of(file, "yaml"), file)
+
+
+CONFIG_READERS: dict[str, collections.abc.Callable[..., RawConfigData]] = {"json": read_json, "toml": read_toml, "ini": read_ini, "yaml": read_yaml}
+
+
+# ── a file's text, and the text parsed ──────────────────────────────────────
+# A load reads each file once: the text is parsed here, and its lines are found in the same text (`_locate`).
+
+def text_of(file: str | os.PathLike[str], cfg_type: str) -> str:
+    """The text of a file, UTF-8. TOML's as its bytes decoded (tomllib's rule: a lone carriage return stays what it is)."""
+    if cfg_type == "toml":
+        with open(file, "rb") as stream:
+            return stream.read().decode("utf-8")
+    with open(file, encoding = "utf-8") as stream:
+        return stream.read()
+
+
+def parse_json(text: str, file: str | os.PathLike[str]) -> RawConfigData:
+    return _mapping(json.loads(text), file)
+
+
+def parse_toml(text: str, file: str | os.PathLike[str]) -> RawConfigData:
+    return tomllib.loads(text)                                      # a TOML document is always a table
+
+
+def parse_ini(text: str, file: str | os.PathLike[str], schema: type | None = None) -> RawConfigData:
     #* default_section names a section nobody writes, so [DEFAULT] is an ordinary one: its keys
     #* are not copied into the others (they are the top-level keys).
     parser = configparser.ConfigParser(interpolation = None, default_section = "\0no default\0", strict = True)
     parser.optionxform = str                                        # type: ignore[assignment,method-assign]  # keys as written
-    with open(file, encoding = "utf-8") as stream:
-        parser.read_file(stream)
+    parser.read_string(text, source = os.fspath(file))
     data: RawConfigData = {}
     for section in parser.sections():
         values = dict(parser.items(section, raw = True))
@@ -66,23 +101,18 @@ def read_ini(file: str | os.PathLike[str], schema: type | None = None) -> RawCon
             target = existing
         _merge(target, values, tuple(parts), file)
     if schema is not None:
-        _split_lists(data, schema, file)
+        split_lists(data, schema, file)
     return data
 
 
-def read_yaml(file: str | os.PathLike[str]) -> RawConfigData:
-    """
-    `yaml.safe_load` with YAML 1.2 booleans: a `SafeLoader` whose bool resolver matches only
-    `true` / `false`, so `country: no` stays `"no"` (a `bool` field still takes `yes`
-    through enforced's coercion). PyYAML is imported here and only here: a `ModuleNotFoundError`
-    that says `pip install cfgcast[yaml]` when it is missing. An empty file is an empty mapping.
-    """
-    with open(file, encoding = "utf-8") as stream:
-        yaml, loader = _yaml()
-        return _mapping(yaml.load(stream, Loader = loader), file, empty_is_none = True)
+def parse_yaml(text: str, file: str | os.PathLike[str]) -> RawConfigData:
+    yaml, loader = yaml_loader()
+    stream = io.StringIO(text)
+    stream.name = os.fspath(file)                                   # type: ignore[misc]  # what PyYAML names in an error
+    return _mapping(yaml.load(stream, Loader = loader), file, empty_is_none = True)
 
 
-CONFIG_READERS: dict[str, collections.abc.Callable[..., RawConfigData]] = {"json": read_json, "toml": read_toml, "ini": read_ini, "yaml": read_yaml}
+PARSERS: dict[str, collections.abc.Callable[..., RawConfigData]] = {"json": parse_json, "toml": parse_toml, "ini": parse_ini, "yaml": parse_yaml}
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -110,15 +140,17 @@ def _hints(schema: type) -> dict[str, Any]:
         return {}
 
 
-def _split_lists(data: RawConfigData, schema: type, file: str | os.PathLike[str], path: tuple[str, ...] = ()) -> None:
+def split_lists(data: RawConfigData, schema: type, file: str | os.PathLike[str], path: tuple[str, ...] = ()) -> None:
     """
     In place: the text of each field the schema types as a list, split on commas, in every section (also
     the sections of a `dict[str, Section]`, which ini writes as `[field.name]`). A `ValueError` for a
     list of sections given as text: ini can't hold one.
     """
-    for name, hint in _hints(schema).items():
+    hints = _hints(schema)
+    for name, field in keys_of(schema).items():                     # by the key of the file, which is what data has
         if name not in data:
             continue
+        hint = hints.get(field.name)
         value, found = data[name], section_of(hint)
         if found is None:
             if isinstance(value, str) and is_list(hint):
@@ -126,11 +158,11 @@ def _split_lists(data: RawConfigData, schema: type, file: str | os.PathLike[str]
             continue
         kind, section = found
         if kind == "one" and isinstance(value, dict):
-            _split_lists(value, section, file, (*path, name))
+            split_lists(value, section, file, (*path, name))
         elif kind == "dict" and isinstance(value, dict):
             for key, item in value.items():
                 if isinstance(item, dict):
-                    _split_lists(item, section, file, (*path, name, key))
+                    split_lists(item, section, file, (*path, name, key))
         elif kind in ("list", "tuple") and isinstance(value, str):
             raise ValueError(
                 f"{os.fspath(file)}: {'.'.join((*path, name))} is a list of sections ({section.__name__}), "
@@ -141,7 +173,7 @@ def _split_lists(data: RawConfigData, schema: type, file: str | os.PathLike[str]
 _YAML: tuple[Any, Any] | None = None
 
 
-def _yaml() -> tuple[Any, Any]:
+def yaml_loader() -> tuple[Any, Any]:
     """PyYAML and a `SafeLoader` class with the YAML 1.2 booleans, made once (imported on first use)."""
     global _YAML
     if _YAML is None:

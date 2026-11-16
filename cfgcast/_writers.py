@@ -24,19 +24,26 @@ from enum import Enum
 from pathlib import PurePath
 from typing import Any, Callable
 from uuid import UUID
+from enforced import dispatch
+from enforced.data_types import SecretStr
+from ._errors import MASK
 from ._readers import CfgType, RawConfigData
 import json
 import math
 import os
 import re
+import secrets
+import stat
 
 
-def write_json(file: str | os.PathLike[str], data: RawConfigData, *, indent: int | None = 2) -> None:
-    """`json.dumps` (`ensure_ascii = False`, `allow_nan = False`: NaN is no JSON), UTF-8."""
-    _save(file, json.dumps(_plain(data), indent = indent, ensure_ascii = False, allow_nan = False, default = _iso) + "\n")
+def json_text(data: RawConfigData, *, indent: int | None = 2, mask: bool = False) -> str:
+    """`json.dumps` (`ensure_ascii = False`); NaN and the infinities are refused (they are no JSON), with the key named."""
+    plain = _plain(data, mask)
+    _no_nan(plain, ())
+    return json.dumps(plain, indent = indent, ensure_ascii = False, allow_nan = False, default = _iso) + "\n"
 
 
-def write_toml(file: str | os.PathLike[str], data: RawConfigData) -> None:
+def toml_text(data: RawConfigData, *, mask: bool = False) -> str:
     """
     TOML, our own (`tomllib` only reads). Top-level keys first, then each section as a
     `[table]` and nested ones as `[db.replica]`; a list of dictionaries as `[[array]]`.
@@ -45,18 +52,18 @@ def write_toml(file: str | os.PathLike[str], data: RawConfigData) -> None:
     list is a `ValueError` (TOML has no null).
     """
     lines: list[str] = []
-    _toml_table(lines, _plain(data), (), header = False)
-    _save(file, "\n".join(lines).lstrip("\n") + "\n")
+    _toml_table(lines, _plain(data, mask), (), header = False)
+    return "\n".join(lines).lstrip("\n") + "\n"
 
 
-def write_ini(file: str | os.PathLike[str], data: RawConfigData) -> None:
+def ini_text(data: RawConfigData, *, mask: bool = False) -> str:
     """
     ini, as `read_ini` reads it back: top-level keys under `[DEFAULT]`, a section as
     `[db]` and a nested one as `[db.replica]`, a list comma-joined (`hosts = a, b, c`;
     an empty list as `hosts =`). A bool as `true` / `false`. `ValueError` for what ini
     can't hold: a list item with a comma, a list of dictionaries, a value with a line break.
     """
-    plain = _plain(data)
+    plain = _plain(data, mask)
     lines: list[str] = []
     top = {key: value for key, value in plain.items() if not isinstance(value, dict)}
     if top:
@@ -64,10 +71,10 @@ def write_ini(file: str | os.PathLike[str], data: RawConfigData) -> None:
     for key, value in plain.items():
         if isinstance(value, dict):
             _ini_sections(lines, value, (key,))
-    _save(file, "\n".join(lines).lstrip("\n") + "\n")
+    return "\n".join(lines).lstrip("\n") + "\n"
 
 
-def write_yaml(file: str | os.PathLike[str], data: RawConfigData) -> None:
+def yaml_text(data: RawConfigData, *, mask: bool = False) -> str:
     """
     YAML, our own (PyYAML not needed to write): block style, two spaces of indent. A string is
     quoted when a YAML 1.1 reader would take it for something else (`no`, `on`, `08`, `1e3`,
@@ -75,12 +82,36 @@ def write_yaml(file: str | os.PathLike[str], data: RawConfigData) -> None:
     character first: other readers in a workflow get the string too.
     """
     lines: list[str] = []
-    plain = _plain(data)
+    plain = _plain(data, mask)
     if plain:
         _yaml_mapping(lines, plain, 0)
     else:
         lines.append("{}")
-    _save(file, "\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+#* The text of each format: `mask = True` writes a secret as the mask (text that is shown), False as its real text (a file).
+TEXTS: dict[CfgType, Callable[..., str]] = {"json": json_text, "toml": toml_text, "ini": ini_text, "yaml": yaml_text}
+
+
+def write_json(file: str | os.PathLike[str], data: RawConfigData, *, indent: int | None = 2) -> None:
+    """`json_text` as the whole of `file` (UTF-8)."""
+    _save(file, json_text(data, indent = indent))
+
+
+def write_toml(file: str | os.PathLike[str], data: RawConfigData) -> None:
+    """`toml_text` as the whole of `file`."""
+    _save(file, toml_text(data))
+
+
+def write_ini(file: str | os.PathLike[str], data: RawConfigData) -> None:
+    """`ini_text` as the whole of `file`."""
+    _save(file, ini_text(data))
+
+
+def write_yaml(file: str | os.PathLike[str], data: RawConfigData) -> None:
+    """`yaml_text` as the whole of `file`."""
+    _save(file, yaml_text(data))
 
 
 WRITERS: dict[CfgType, Callable[[str | os.PathLike[str], RawConfigData], None]] = {
@@ -90,58 +121,160 @@ WRITERS: dict[CfgType, Callable[[str | os.PathLike[str], RawConfigData], None]] 
 
 # ── what every writer shares ────────────────────────────────────────────────
 
-def _plain(value: Any) -> Any:
-    """The value as the built-in types only (see the module's docstring)."""
+def _plain(value: Any, mask: bool = False) -> Any:
+    """The value as the built-in types only (see the module's docstring); with `mask`, a `SecretStr` as the mask."""
     if value is None or type(value) in (bool, int, float, str):
         return value
-    if isinstance(value, bool):
-        return bool(value)
-    if isinstance(value, Enum):
-        return _plain(value.value)
-    if isinstance(value, str):
-        return str.__str__(value)                                   # a SecretStr's real text, not str()'s mask
-    if isinstance(value, int):
-        return int(value)
-    if isinstance(value, float):
-        return float(value)
-    if isinstance(value, (PurePath, Decimal, UUID)):
-        return str(value)
-    if isinstance(value, (date, time)):                             # a datetime is a date: each writer has its own form
-        return value
+    return _plain_of(value, mask)
+
+
+#* Type strategy: each node is dispatched on its type to its handler. The dispatchers are made once, here:
+#* one made inside the function that calls it is built again at every call (some 300 µs, against 0.2 µs).
+@dispatch
+def _plain_of(node: Any, mask: bool) -> Any:
+    raise TypeError(f"a {type(node).__name__} can't be written to a configuration file")
+
+@_plain_of.register
+def _(node: None | date | time, mask: bool) -> None | date | time:
+    return node
+
+@_plain_of.register
+def _(node: Enum, mask: bool) -> Any:
+    return _plain(node.value, mask)
+
+@_plain_of.register
+def _(node: str, mask: bool) -> str:
+    if mask and isinstance(node, SecretStr):
+        return MASK
+    return str.__str__(node)                                        # a SecretStr's real text, not str()'s mask
+
+@_plain_of.register
+def _(node: int, mask: bool) -> int:
+    return int(node)
+
+@_plain_of.register
+def _(node: float, mask: bool) -> float:
+    return float(node)
+
+@_plain_of.register
+def _(node: bool, mask: bool) -> bool:
+    return bool(node)
+
+@_plain_of.register
+def _(node: PurePath | Decimal | UUID, mask: bool) -> str:
+    return str(node)
+
+@_plain_of.register
+def _(node: dict, mask: bool) -> dict:
+    return {_key(key): _plain(item, mask) for key, item in node.items()}
+
+@_plain_of.register
+def _(node: list | tuple | set | frozenset, mask: bool) -> list[Any]:
+    return [_plain(item, mask) for item in node]
+
+
+def plain_json(value: Any, mask: bool = True) -> Any:
+    """`_plain`, and what JSON has no type for as text: a date, a datetime and a time in ISO 8601 (`to_dict(plain = True)`)."""
+    return _json_of(_plain(value, mask))
+
+
+@dispatch
+def _json_of(node: Any) -> Any:
+    return node
+
+@_json_of.register
+def _(node: date | time) -> str:
+    return node.isoformat()
+
+@_json_of.register
+def _(node: dict) -> dict:
+    return {key: _json_of(value) for key, value in node.items()}
+
+@_json_of.register
+def _(node: list) -> list:
+    return [_json_of(value) for value in node]
+
+
+def _no_nan(value: Any, path: tuple[Any, ...]) -> None:
+    """A `ValueError` that names the key of a NaN or an infinity: JSON has neither."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        where = "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in path).lstrip(".")
+        raise ValueError(f"{where}: JSON has no NaN and no infinity (TOML and YAML do)")
     if isinstance(value, dict):
-        return {_key(key): _plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_plain(item) for item in value]
-    raise TypeError(f"{type(value).__name__} can't be written to a configuration file: {value!r}")
+        for key, item in value.items():
+            _no_nan(item, (*path, key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _no_nan(item, (*path, index))
 
 
 def _key(key: Any) -> str:
     """A dictionary's key as text, which is all a file has: a number, an `Enum`, a `UUID` or a date as loading reads it back."""
-    plain = _plain(key)
-    if isinstance(plain, str):
-        return plain
-    if isinstance(plain, bool):
-        return "true" if plain else "false"
-    if isinstance(plain, (int, float)):
-        return repr(plain)
-    if isinstance(plain, (date, time)):
-        return plain.isoformat()
-    raise TypeError(f"a key of a configuration must be text, a number or a date, got {key!r}")
+    return _key_of(_plain(key))
+
+
+@dispatch
+def _key_of(node: Any) -> str:
+    #* The type, not the key: it is plain by now, and a tuple with a SecretStr in it would be its real text.
+    raise TypeError(f"a {type(node).__name__} is not a valid key for a configuration file")
+
+@_key_of.register
+def _(node: str) -> str:
+    return node
+
+@_key_of.register
+def _(node: bool) -> str:
+    return "true" if node else "false"
+
+@_key_of.register
+def _(node: int | float) -> str:
+    return repr(node)
+
+@_key_of.register
+def _(node: date | time) -> str:
+    return node.isoformat()
 
 
 def _save(file: str | os.PathLike[str], text: str) -> None:
-    #* The text is made in full, and encoded, before the file is opened: an error leaves no half-written
-    #* file, and one that was there stays as it was (opening it for writing empties it).
+    """
+    `text` as the whole of `file`, or `file` as it was: written to a temporary file next to it, which
+    then takes its place (`os.replace`: the old file or the new one, never a mixture).
+    """
+    #* The text is made in full, and encoded, before anything is opened: an error leaves no half-written file.
     encoded = text.encode("utf-8")
-    with open(file, "wb") as stream:
-        stream.write(encoded)
+    target = os.path.realpath(file)                                 # a symbolic link stays one: what it points to is replaced
+    if os.path.isdir(target):
+        raise IsADirectoryError(f"{os.fspath(file)} is a directory: a configuration is written to a file")
+    try:
+        mode: int | None = stat.S_IMODE(os.stat(target).st_mode)    # a file that was there keeps its permission bits
+    except FileNotFoundError:
+        mode = None
+    directory, name = os.path.split(target)
+    #* The same directory: os.replace is atomic only within one file system. Not tempfile.mkstemp: its
+    #* file is 0o600, and a new configuration would be readable by its owner only (0o666 goes through the umask).
+    temporary = os.path.join(directory, f".{name}.{secrets.token_hex(8)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _iso(value: Any) -> str:
     """A date, a datetime or a time as ISO 8601 text (`json.dumps` calls this for what it doesn't know: only those)."""
     if isinstance(value, (date, time)):
         return value.isoformat()
-    raise TypeError(f"{type(value).__name__} can't be written to a configuration file: {value!r}")
+    raise TypeError(f"a {type(value).__name__} can't be written to a configuration file")
 
 
 def _number(value: int | float, inf: str, nan: str) -> str:
@@ -176,22 +309,47 @@ def _toml_key(key: str) -> str:
     return key if _TOML_BARE.fullmatch(key) else _toml_string(key)
 
 
-def _toml_value(value: Any, where: str) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return _number(value, "inf", "nan")
-    if isinstance(value, str):
-        return _toml_string(value)
-    if isinstance(value, time) and value.tzinfo is not None:        # TOML's time is local: with an offset, as text
-        return _toml_string(value.isoformat())
-    if isinstance(value, (date, time)):
-        return value.isoformat()                                    # RFC 3339, as TOML writes them
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item, where) for item in value) + "]"
-    if isinstance(value, dict):                                     # a table inside a list that isn't all tables
-        return "{" + ", ".join(f"{_toml_key(k)} = {_toml_value(v, where)}" for k, v in value.items() if v is not None) + "}"
+@dispatch
+def _toml_value(node: Any, where: str) -> str:
+    """A plain value as TOML writes it; `where` is its key, for the message of what TOML can't hold."""
     raise ValueError(f"{where}: TOML has no null, and a list can't hold one")
+
+
+@_toml_value.register
+def _(node: bool, where: str) -> str:
+    return "true" if node else "false"
+
+
+@_toml_value.register
+def _(node: int | float, where: str) -> str:
+    return _number(node, "inf", "nan")
+
+
+@_toml_value.register
+def _(node: str, where: str) -> str:
+    return _toml_string(node)
+
+
+@_toml_value.register
+def _(node: date, where: str) -> str:
+    return node.isoformat()
+
+
+@_toml_value.register
+def _(node: time, where: str) -> str:
+    if node.tzinfo is not None:
+        return _toml_string(node.isoformat())                       # TOML's local time has no offset
+    return node.isoformat()
+
+
+@_toml_value.register
+def _(node: list, where: str) -> str:
+    return "[" + ", ".join(_toml_value(item, where) for item in node) + "]"
+
+
+@_toml_value.register
+def _(node: dict, where: str) -> str:
+    return "{" + ", ".join(f"{_toml_key(k)} = {_toml_value(v, where)}" for k, v in node.items() if v is not None) + "}"
 
 
 def _is_table_array(value: Any) -> bool:
@@ -218,20 +376,33 @@ def _toml_table(lines: list[str], table: dict[str, Any], path: tuple[str, ...], 
 _INI_KEY = re.compile(r"[^\s=:\[\];#][^=:\n\r]*")
 
 
-def _ini_text(value: Any, where: str) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return _number(value, "inf", "nan")
-    if isinstance(value, str):
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"{where}: ini can't hold a value with a line break")
-        if value != value.strip():
-            raise ValueError(f"{where}: ini drops the spaces around a value, so this one would change")
-        return value
-    if isinstance(value, (date, time)):
-        return value.isoformat()
-    raise ValueError(f"{where}: ini can't hold a {type(value).__name__} here")
+@dispatch
+def _ini_text(node: Any, where: str) -> str:
+    raise ValueError(f"{where}: ini can't hold a {type(node).__name__} here")
+
+
+@_ini_text.register
+def _(node: bool, where: str) -> str:
+    return "true" if node else "false"
+
+
+@_ini_text.register
+def _(node: int | float, where: str) -> str:
+    return _number(node, "inf", "nan")
+
+
+@_ini_text.register
+def _(node: str, where: str) -> str:
+    if "\n" in node or "\r" in node:
+        raise ValueError(f"{where}: ini can't hold a value with a line break")
+    if node != node.strip():
+        raise ValueError(f"{where}: ini drops the spaces around a value, so this one would change")
+    return node
+
+
+@_ini_text.register
+def _(node: date | time, where: str) -> str:
+    return node.isoformat()
 
 
 def _ini_section(lines: list[str], name: str, values: dict[str, Any], path: tuple[str, ...]) -> None:
