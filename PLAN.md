@@ -456,8 +456,8 @@ class Pool:
 ### 10. Keys that aren't Python names (built 2026-11-16)
 `max-size`, `log-level`, `class`: common in TOML and YAML, and no field can have that name.
 
-- Per field: `field(key = "max-size")`. Per class: `@cfg(keys = "kebab")` reads every field `max_size` as
-  `max-size` (a field's own `key` wins). Only `"kebab"` at first; a function later if asked.
+- Per field: `field(key = "max-size")`. Per class: `@cfg(keys = "kebab-case")` reads every field `max_size` as
+  `max-size` (a field's own `key` wins). Only `"kebab-case"` at first; a function later if asked.
 - **The key is what the file has**: unknown and missing keys, `loc` and the message say `max-size`; `write`
   writes it; `to_dict` gives it (`to_dict` is the file's shape: `write` and the overrides merge into it, and
   `from_dict(to_dict(app)) == app` must hold). Attributes stay Python names: `app.pool.max_size`.
@@ -467,7 +467,7 @@ class Pool:
   compared without case, as now.
 - ini: keys are kept as written already. A `.` in a section's key is a `TypeError` at the decorator (in ini
   `[db.pool]` is nesting, and TOML reads a bare dotted key as nesting too); in a value's key it is fine.
-- `__cfg_sections__` is by key. Two fields with one key (`max_size` and `max-size` under `kebab`): `TypeError`.
+- `__cfg_sections__` is by key. Two fields with one key (`max_size` and `max-size` under `kebab-case`): `TypeError`.
 - Tests in every format, a `cfgs/` case in every format (rule 1).
 
 ### 11. A section of a bigger file (built 2026-11-16)
@@ -603,7 +603,7 @@ option); load-time overrides **yes**.
 - **A missing section** (11) is a `missing` problem with the message `missing section`, raised before the build (see
   the review). `section` is not an option of `write`.
 - **`Loadable`** (7): the name of the base; `from_dict(App, data)` the function. `Config` stays as its old name inside.
-- **Keys** (10): only `"kebab"`. `class_` is `class` under it (a trailing `_` taken off).
+- **Keys** (10): only `"kebab-case"`. `class_` is `class` under it (a trailing `_` taken off).
 - **`__post_init__`** (2): as planned. A short secret is masked wherever its letters stand in the exception's text
   (`re**********lica` for the secret `p`): kept, it is the price of never showing one.
 - **Templates** (14): a commented key is `#key = value` with **no space**, a note is `# note` (a program can tell

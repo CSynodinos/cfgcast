@@ -106,7 +106,7 @@ class Lenient:
 | `strict` | `True` | refuse keys the schema doesn't name. `False` ignores them, here and in every section below, with a warning: an older program reading a newer file |
 | `frozen` | `True` | a loaded configuration can't be changed (`FrozenInstanceError`) |
 | `env_prefix` | `None` | read environment variables with this prefix whenever the class is loaded: see [Environment variables](#environment-variables) |
-| `keys` | `None` | `"kebab"`: a field `max_size` is the key `max-size` in a file: see [Keys that aren't Python names](#keys-that-arent-python-names) |
+| `keys` | `None` | `"kebab-case"`: a field `max_size` is the key `max-size` in a file: see [Keys that aren't Python names](#keys-that-arent-python-names) |
 
 A section may be written after the class that names it. On Python 3.13 quote its name there
 (`db: "Database"`): 3.13 evaluates an annotation where it stands, so without quotes it is Python's own
@@ -167,7 +167,7 @@ class Pool:
 per field (`field(key = "max-size")`), or for a whole class:
 
 ```python
-@cfg(keys = "kebab")                   # max_size is the key max-size, class_ is class
+@cfg(keys = "kebab-case")              # max_size is the key max-size, class_ is class
 class Pool:
     max_size: int = 10
     class_: str = "small"
@@ -177,7 +177,7 @@ class Pool:
   the message, `write`, `to_dict` and `from_dict` (so `from_dict(App, to_dict(app)) == app`). The attribute
   keeps its Python name: `pool.max_size`.
 - The field's name is no key any more: `max_size = 10` in a file is an unknown key.
-- `keys = "kebab"` holds for its class only: a section says its own. A field's `key` wins over it.
+- `keys = "kebab-case"` holds for its class only: a section says its own. A field's `key` wins over it.
 - An environment variable can't hold a `-`: `APP_POOL__MAX_SIZE` is `pool.max-size`.
 - Two fields with one key are refused at the decorator (`TypeError`).
 

@@ -53,7 +53,7 @@ repository. Commit only when asked; no `git stash`.
   owner's decision, 2026-11-01: it was per class). What it ignores is named in one `ConfigWarning` (keys, never
   values); `show_warnings = False` on `load_cfg` / `load` / `from_dict` leaves it out. `write`'s overrides always warn.
 - **`env_prefix`** on the class is `load_cfg`'s, for every load of that class (the call's wins; a section's is not read;
-  `from_dict` reads none). **`keys = "kebab"`**: `max_size` is the key `max-size`, in that class only.
+  `from_dict` reads none). **`keys = "kebab-case"`**: `max_size` is the key `max-size`, in that class only.
 - **`field(key =, doc =)`**: `dataclasses.field` with the two in its metadata (under `"cfgcast"`). **The key is what a
   file has**: `loc`, messages, `write`, `to_dict`, `from_dict`, `__cfg_sections__` use it; the attribute keeps its name.
 - **`Loadable`**: the class that holds `load` / `from_dict`; as a base (`@cfg class App(Loadable)`) it is for checkers
