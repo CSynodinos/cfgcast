@@ -21,21 +21,23 @@ How it works, with no base class for the user to inherit:
    `enforced.dataclass(cls, kw_only = True, frozen = ..., coerce = True, deep = True)`. Without
    slots the standard `dataclasses` changes a class in place and returns it: the class the
    statement binds is the class that was written, so `isinstance` and pickling just work.
-3. The options are stored on the class (`__cfg_options__`: `(strict, frozen)`), and the fields
+3. The options are stored on the class (`__cfg_options__`: `strict`, `frozen`, `env_prefix`), and the fields
    that are sections on `__cfg_sections__`. A class with `__cfg_options__` is a configuration.
-4. `Config` holds the two members every configuration has (`load`, `from_dict`). `cfg` copies
-   them onto the class; the class does not inherit from it, which is how it stays free of a
+4. `Loadable` holds the two members every configuration has (`load`, `from_dict`). `cfg` copies
+   them onto the class; the class need not inherit from it, which is how it stays free of a
    base. `to_dict` and `write` are functions of the module, not members: they take the
-   configuration as their first argument. (Open: checkers don't see members added by a
-   decorator; see `PLAN.md`.)
+   configuration as their first argument. Checkers don't see members added by a decorator:
+   a class that wants them seen names `Loadable` as its base, or uses `load_cfg` / `from_dict`.
 
 A field whose type is another configuration is a nested section / table: the builder (`_build`)
 makes it from the sub-dictionary. enforced checks the leaves; it does not turn a dict into a class.
 """
-from ._errors import ConfigError
-from ._hints import section_of
+from ._errors import ConfigError, _where
+from ._hints import KEY_STYLES, METADATA, OPTIONS_ATTR, Options, key_of, said, section_of, styled
+from ._sources import SOURCES_ATTR, OptionalFile
 from ._readers import CONFIG_READERS, CfgType, RawConfigData
-from ._writers import WRITERS
+from ._writers import TEXTS, WRITERS, plain_json
+from ._template import save_template
 from collections.abc import Mapping, Sequence
 from typing import (
     Any,
@@ -45,9 +47,10 @@ from typing import (
     Self,
     overload,
     dataclass_transform,
+    get_origin,
     get_type_hints,
     )
-from dataclasses import Field, field, fields, is_dataclass
+from dataclasses import MISSING, Field, field as dataclass_field, fields, is_dataclass
 import enforced
 import inspect
 import os
@@ -57,7 +60,6 @@ if sys.version_info >= (3, 14):
     import annotationlib
 
 
-OPTIONS_ATTR = "__cfg_options__"
 SECTIONS_ATTR = "__cfg_sections__"
 
 #* .cfg is configparser's too: one format, two suffixes.
@@ -66,46 +68,156 @@ SUFFIXES: dict[str, CfgType] = {
     }
 
 
-class Config:
+class Loadable:
     """
-    The members every `@cfg` class gets. Not a base class, and not exported: `cfg` copies these
-    functions onto the class it decorates.
+    The members every `@cfg` class gets, `load` and `from_dict`. `cfg` copies them onto the class it
+    decorates, so no base class is needed. As a base it is for type checkers only: they don't see
+    members a decorator adds, and do see inherited ones.
+
+        @cfg
+        class App(Loadable):
+            name: str
+
+        app = App.load("app.toml")       # a checker knows `load`, and that it gives an `App`
+
+    It is not a configuration itself (the rule that configurations are not inheritable is about `@cfg`
+    classes), and a class below it is one only with `@cfg`.
     """
-    __cfg_options__: ClassVar[tuple[bool, bool]]                    # (strict, frozen)
+    __cfg_options__: ClassVar[Options]                              # strict, frozen, env_prefix, keys
     #* field name -> the nested configuration class, or list[it] / tuple[it, ...] / dict[str, it]
     __cfg_sections__: ClassVar[dict[str, Any]]
 
     @classmethod
     def load(
         cls,
-        file: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
+        file: str | os.PathLike[str] | OptionalFile | Sequence[str | os.PathLike[str] | OptionalFile],
         cfg_type: CfgType | Literal["infer"] = "infer",
         *,
         env_prefix: str | None = None,
         env: Mapping[str, str] | None = None,
+        env_file: str | os.PathLike[str] | OptionalFile | None = None,
+        section: str | Sequence[str] | None = None,
+        overrides: Mapping[str, Any] | None = None,
         show_warnings: bool = True) -> Self:
-        """`load_cfg(file, cls, cfg_type = ..., env_prefix = ..., env = ..., show_warnings = ...)`."""
-        from ._load import load          # _load imports _base: here, not at the top
-        return load(cls, file, cfg_type, env_prefix, env, show_warnings)
-
+        """`load_cfg(file, cls, ...)`, with every option of it."""
+        from ._load import load_cfg          # _load imports _base: here, not at the top
+        return load_cfg(
+            file, cls, cfg_type, env_prefix = env_prefix, env = env, env_file = env_file, section = section,
+            overrides = overrides, show_warnings = show_warnings)
 
     @classmethod
     def from_dict(cls, data: RawConfigData, *, show_warnings: bool = True) -> Self:
         """Build from a dictionary already read (what every reader returns): sections made, keys checked, as `load_cfg`."""
-        from ._build import build          # _build imports _base: here, not at the top
-        return build(cls, data, "<dict>", show_warnings)  #? remember, cls has become a dataclass via @cfg
+        return from_dict(cls, data, show_warnings = show_warnings)
 
 
+Config = Loadable                                                   # the name it had before it was public
 
-def to_dict(obj: object) -> dict[str, Any]:
+
+def from_dict[T](schema: type[T], data: RawConfigData, *, show_warnings: bool = True) -> T:
+    """
+    Build `schema` from a dictionary already read (what every reader returns): sections made, keys
+    checked, every problem in one `ConfigError`, as `load_cfg` does for a file. The same as
+    `schema.from_dict(data)`, written so that a type checker knows what it returns.
+    """
+    from ._build import build          # _build imports _base: here, not at the top
+    if not (isinstance(schema, type) and is_config(schema)):
+        raise TypeError(f"from_dict: {schema!r} is not a @cfg class")
+    return build(schema, data, "<dict>", show_warnings)
+
+
+def to_dict(obj: object, *, plain: bool = False, reveal_secrets: bool = False) -> dict[str, Any]:
     """
     The values as a dictionary, sections as nested dictionaries. Values are as they are on the
     object (a `SecretStr` stays one, masked when printed); lists and dictionaries are copies, so
     changing the result never changes the configuration.
+
+    Args:
+        plain: only what JSON holds, for `json.dumps`, a log or a response: text, numbers, booleans,
+            `None`, lists, and dictionaries with text keys. A path, a `Decimal`, a `UUID`, a date and a
+            time become text, an enum its value, and **a `SecretStr` the mask** (`"**********"`).
+        reveal_secrets: with `plain`, a `SecretStr` as its real text.
     """
     if isinstance(obj, type) or not is_config(obj):
         raise TypeError(f"to_dict takes an instance of a @cfg class, got {obj!r}")
-    return _as_dict(obj)
+    for name, option in (("plain", plain), ("reveal_secrets", reveal_secrets)):
+        if type(option) is not bool:
+            raise TypeError(f"to_dict: {name} must be True or False, got {option!r}")
+    if reveal_secrets and not plain:
+        raise TypeError("to_dict: reveal_secrets goes with plain = True (without it a SecretStr stays a SecretStr)")
+    return plain_json(_as_dict(obj), mask = not reveal_secrets) if plain else _as_dict(obj)
+
+
+def sources_of(obj: object) -> dict[str, str]:
+    """
+    Where each value of a loaded configuration came from, by its key path: the file and the line
+    (`"prod.yaml:3"`), the environment variable (`"APP_DB__PORT"`), `"overrides"`, or `"(default)"` where no
+    source gave it and the class's default was taken. For a start-up log, and for "why is this value what it is".
+
+        >>> sources_of(load_cfg(["base.toml", "prod.yaml"], App, env_prefix = "APP_"))
+        {'name': 'base.toml:1', 'db.host': 'prod.yaml:3', 'db.port': 'APP_DB__PORT', 'debug': '(default)'}
+
+    Keys are written as in a message (`servers[0].host`), from the configuration asked: `sources_of(app.db)`
+    has `host`, not `db.host`. Only names are in it, never a value. A line is there where it could be
+    found, for a list item or a key without one the line of the key above it. It says how the
+    configuration was loaded: a value assigned later (`frozen = False`) is still what it was.
+
+    A `ValueError` for a configuration that wasn't loaded: one constructed directly (`App(name = "x")`),
+    or a section that is its class's default.
+    """
+    if isinstance(obj, type) or not is_config(obj):
+        raise TypeError(f"sources_of takes an instance of a @cfg class, got {obj!r}")
+    held = vars(obj).get(SOURCES_ATTR)
+    if held is None:
+        raise ValueError(
+            f"sources_of: this {type(obj).__name__} was not loaded (it was constructed directly, or is a default): "
+            f"ask the configuration that load_cfg or from_dict returned"
+            )
+    sources, base = held
+    found: dict[str, str] = {}
+
+    def walk(value: Any, path: tuple[Any, ...], shown: tuple[Any, ...]) -> None:
+        pairs: list[tuple[Any, Any]] | None = None
+        if _is_section(value):
+            pairs = [(key_of(type(value), f), getattr(value, f.name)) for f in fields(value) if f.init]
+        elif isinstance(value, (list, tuple)) and value and all(_is_section(item) for item in value):
+            pairs = list(enumerate(value))
+        elif isinstance(value, dict) and value and all(_is_section(item) for item in value.values()):
+            pairs = list(value.items())
+        if pairs is None:
+            found[_where(shown, False)] = sources.where(path)
+            return
+        for key, item in pairs:
+            walk(item, (*path, key), (*shown, key))
+
+    walk(obj, base, ())
+    return found
+
+
+def _is_section(value: Any) -> bool:
+    return is_dataclass(value) and not isinstance(value, type)
+
+
+def to_text(
+    obj: object,
+    cfg_type: CfgType = "json",
+    *,
+    overrides: dict[str, Any] | None = None,
+    reveal_secrets: bool = False) -> str:
+    """
+    The configuration as text in one of the formats: what `write` would write to a file, but for one
+    difference: **a `SecretStr` is the mask** (`**********`) unless `reveal_secrets` is `True`. Text is
+    printed, logged and sent; a file is where secrets go.
+
+    `overrides` as for `write`: checked against the schema, and never changing `obj`.
+    """
+    if isinstance(obj, type) or not is_config(obj):
+        raise TypeError(f"to_text takes an instance of a @cfg class, got {obj!r}")
+    if type(reveal_secrets) is not bool:
+        raise TypeError(f"to_text: reveal_secrets must be True or False, got {reveal_secrets!r}")
+    if cfg_type not in TEXTS:
+        raise ValueError(f"Unsupported configuration type: {cfg_type!r} (one of {', '.join(TEXTS)})")
+    return TEXTS[cfg_type](_with(obj, overrides, "<overrides>", "to_text"), mask = not reveal_secrets)
 
 
 def write(
@@ -122,26 +234,60 @@ def write(
     Comments and the layout of a file it was loaded from are not kept.
 
     A `ConfigError` for overrides the schema refuses, a `TypeError` / `ValueError` for a value
-    the format can't hold: either way before the file is opened, so nothing is written.
+    the format can't hold: either way before the file is opened, so nothing is written. The file
+    is written whole or not at all: to a temporary file next to it, which then takes its place.
     """
-    from ._build import build          # _build imports _base: here, not at the top
-
     if isinstance(obj, type) or not is_config(obj):
         raise TypeError(f"write takes an instance of a @cfg class, got {obj!r}")
     selected_cfg_type = _format_of(file, cfg_type)
+    WRITERS[selected_cfg_type](file, _with(obj, overrides, os.fspath(file), "write"))
+
+
+def write_template(
+    schema: type,
+    file: str | os.PathLike[str],
+    cfg_type: CfgType | Literal["infer"] = "infer",
+    *,
+    overwrite: bool = False) -> None:
+    """
+    Write a template of `schema` to `file`: every key of the configuration, to be filled in. TOML, YAML
+    or ini; JSON is refused (`ValueError`): it has no comments, and a template needs them.
+
+    A key with a default is written with it. A key that is required, that is `None` by default or that
+    is a secret is written commented out, with a value to replace: **the default of a `SecretStr` is
+    never written**. Above each key, as comments: its `doc` (`cfgcast.field(doc = ...)`), `required`,
+    `secret`, and its type where that says more than the value. A list or a dictionary of sections is
+    one commented item to copy. With its required keys filled in, the template loads, and gives the
+    defaults.
+
+    A file that is there is not replaced (`FileExistsError`) unless `overwrite = True`: a template over
+    a real configuration would lose it. Written whole or not at all, as `write` does.
+    """
+    if not isinstance(schema, type) or not is_config(schema):
+        raise TypeError(f"write_template takes a @cfg class, got {schema!r}")
+    if type(overwrite) is not bool:
+        raise TypeError(f"write_template: overwrite must be True or False, got {overwrite!r}")
+    save_template(schema, file, _format_of(file, cfg_type), overwrite)
+
+
+def _with(obj: Any, overrides: dict[str, Any] | None, name: str, caller: str) -> dict[str, Any]:
+    """The configuration as a dictionary, `overrides` laid over it and checked (`name`: what a problem of theirs names)."""
+    from ._build import build          # _build imports _base: here, not at the top
+
     data = _as_dict(obj)
     if overrides:
         if not isinstance(overrides, dict):
-            raise TypeError(f"write: overrides must be a dictionary of keys, got {type(overrides).__name__}")
+            raise TypeError(f"{caller}: overrides must be a dictionary of keys, got {type(overrides).__name__}")
         #* Checked by building a new instance (never assigned to obj), then written from that one:
         #* what is written is what the schema would load, converted values included.
-        data = _as_dict(build(type(obj), _merged(data, overrides), os.fspath(file)))
-    WRITERS[selected_cfg_type](file, data)
+        data = _as_dict(build(type(obj), _merged(data, overrides), name))
+    return data
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:
     #* The keys of a file: a field(init = False) is worked out by the class, and no key (build refuses it).
-    return {f.name: _copy(getattr(obj, f.name)) for f in fields(obj) if f.init}
+    #* By the key of the file (`cfgcast.field(key = ...)`, `@cfg(keys = ...)`): what from_dict takes back.
+    return {key_of(type(obj), f): _copy(getattr(obj, f.name)) for f in fields(obj) if f.init}
 
 
 def _copy(value: Any) -> Any:
@@ -207,15 +353,95 @@ def _format_of(file: str | os.PathLike[str], cfg_type: str) -> CfgType:
 
 
 @overload
+def field[T](
+    *,
+    default: T,
+    key: str | None = None,
+    doc: str | None = None,
+    init: bool = True,
+    repr: bool = True,
+    hash: bool | None = None,
+    compare: bool = True,
+    metadata: Mapping[Any, Any] | None = None) -> T: ...
+@overload
+def field[T](
+    *,
+    default_factory: Callable[[], T],
+    key: str | None = None,
+    doc: str | None = None,
+    init: bool = True,
+    repr: bool = True,
+    hash: bool | None = None,
+    compare: bool = True,
+    metadata: Mapping[Any, Any] | None = None) -> T: ...
+@overload
+def field(
+    *,
+    key: str | None = None,
+    doc: str | None = None,
+    init: bool = True,
+    repr: bool = True,
+    hash: bool | None = None,
+    compare: bool = True,
+    metadata: Mapping[Any, Any] | None = None) -> Any: ...
+def field(
+    *,
+    default: Any = MISSING,
+    default_factory: Any = MISSING,
+    key: str | None = None,
+    doc: str | None = None,
+    init: bool = True,
+    repr: bool = True,
+    hash: bool | None = None,
+    compare: bool = True,
+    metadata: Mapping[Any, Any] | None = None) -> Any:
+    """
+    `dataclasses.field`, with what a configuration says about a field beyond its type. `dataclasses.field`
+    keeps working in a `@cfg` class: this one is needed only for `key` and `doc`.
+
+    Args:
+        key: the key of this field in a file, where it isn't the field's name: `max_size: int = field(key = "max-size")`,
+            `class_: str = field(key = "class")`. Files, `to_dict`, `from_dict` and messages use the key;
+            the attribute keeps its Python name (`pool.max_size`).
+        doc: one line about the field, written as a comment above its key by `write_template`.
+        default, default_factory, init, repr, hash, compare, metadata: as `dataclasses.field` has them.
+
+    Example:
+        >>> @cfg
+        ... class Pool:
+        ...     max_size: int = field(default = 10, key = "max-size", doc = "connections at most")
+    """
+    for name, text in (("key", key), ("doc", doc)):
+        if text is not None and not (isinstance(text, str) and text.strip()):
+            raise TypeError(f"field: {name} must be text that isn't empty, got {text!r}")
+    return dataclass_field(                                         # type: ignore[call-overload]  # default or default_factory: dataclasses refuses both
+        default = default, default_factory = default_factory, init = init, repr = repr, hash = hash, compare = compare,
+        metadata = {**(metadata or {}), METADATA: {"key": key, "doc": doc}},
+        )
+
+
+@overload
 def cfg[T](cls: type[T], /) -> type[T]: ...
 @overload
-def cfg[T](*, strict: bool = True, frozen: bool = True) -> Callable[[type[T]], type[T]]: ...
+def cfg[T](
+    *,
+    strict: bool = True,
+    frozen: bool = True,
+    env_prefix: str | None = None,
+    keys: Literal["kebab"] | None = None) -> Callable[[type[T]], type[T]]: ...
 @dataclass_transform(
     kw_only_default = True,
     frozen_default = True,
-    field_specifiers = (field, Field),
+    field_specifiers = (dataclass_field, Field, field),
     )
-def cfg[T](cls: type[T] | None = None, /, *, strict: bool = True, frozen: bool = True) -> Any:
+def cfg[T](
+    cls: type[T] | None = None,
+    /,
+    *,
+    strict: bool = True,
+    frozen: bool = True,
+    env_prefix: str | None = None,
+    keys: Literal["kebab"] | None = None) -> Any:
     """
     Make `cls` a configuration schema. Each annotated attribute is a key; its type hint says what the value
     must be, and a default makes the key optional. A field typed as another `@cfg` class is a section.
@@ -225,6 +451,12 @@ def cfg[T](cls: type[T] | None = None, /, *, strict: bool = True, frozen: bool =
             class and every section below it, whatever those say: an older program reading a newer
             file. Loading then gives a `ConfigWarning` that names them (`show_warnings` of `load_cfg`).
         frozen (bool): instances can't be changed after loading (default `True`).
+        env_prefix (str | None): read environment variables with this prefix over the files whenever this
+            class is loaded (`load_cfg`, `load`), as `load_cfg(..., env_prefix = ...)` does; that argument wins
+            over this one. Only the class that is loaded counts, not a section's. `from_dict` reads none.
+        keys ("kebab" | None): how a field's name is written in a file. `"kebab"`: `max_size` is the key
+            `max-size` (and `class_` is `class`), in this class only: a section says its own. A field's
+            own `field(key = ...)` wins. Attributes keep their Python names.
 
     `coerce` and `deep` are always on and are not options: `"8080"` is read as `8080` for an `int`, and `list[Port]` has every item checked.
 
@@ -261,9 +493,14 @@ def cfg[T](cls: type[T] | None = None, /, *, strict: bool = True, frozen: bool =
     for name, option in (("strict", strict), ("frozen", frozen)):
         if type(option) is not bool:
             raise TypeError(f"cfg: {name} must be True or False, got {option!r}")
+    if env_prefix is not None and not isinstance(env_prefix, str):
+        raise TypeError(f"cfg: env_prefix must be text (or None for no environment variables), got {env_prefix!r}")
+    if keys is not None and keys not in KEY_STYLES:
+        raise TypeError(f"cfg: keys must be None or one of {', '.join(map(repr, KEY_STYLES))}, got {keys!r}")
+    options = Options(strict, frozen, env_prefix, keys)
     if cls is None:
-        return lambda target: _create_the_config_object(target, strict, frozen)
-    return _create_the_config_object(cls, strict, frozen)
+        return lambda target: _create_the_config_object(target, options)
+    return _create_the_config_object(cls, options)
 
 
 # ── how a class becomes a configuration ─────────────────────────────────────
@@ -272,11 +509,11 @@ def cfg[T](cls: type[T] | None = None, /, *, strict: bool = True, frozen: bool =
 _CONFIG_MEMBERS = ("load", "from_dict")
 
 
-def _create_the_config_object[T](cls: type[T], strict: bool, frozen: bool) -> type[T]:
+def _create_the_config_object[T](cls: type[T], options: Options) -> type[T]:
 
     #* Validate the class before making it a configuration
-    _validate_class_input(cls)
-    setattr(cls, OPTIONS_ATTR, (strict, frozen))
+    _validate_class_input(cls, options)
+    setattr(cls, OPTIONS_ATTR, options)
 
     #* Enforced Dataclass
     #* ------------------
@@ -286,7 +523,7 @@ def _create_the_config_object[T](cls: type[T], strict: bool, frozen: bool) -> ty
     enforced_dataclass_cfg = enforced.dataclass(
         cls,
         kw_only = True,
-        frozen = frozen,
+        frozen = options.frozen,
         coerce = True,
         deep = True,
         error = ConfigError
@@ -294,7 +531,7 @@ def _create_the_config_object[T](cls: type[T], strict: bool, frozen: bool) -> ty
 
     #* Dynamically add the configuration members to the new dataclass
     for name in _CONFIG_MEMBERS:
-        setattr(enforced_dataclass_cfg, name, vars(Config)[name])       # the classmethod object: binds to the decorated class when read
+        setattr(enforced_dataclass_cfg, name, vars(Loadable)[name])       # the classmethod object: binds to the decorated class when read
     setattr(enforced_dataclass_cfg, SECTIONS_ATTR, _Sections())
     if "__init_subclass__" not in vars(enforced_dataclass_cfg):
         enforced_dataclass_cfg.__init_subclass__ = classmethod(_not_inherited)        # type: ignore[assignment]
@@ -302,7 +539,7 @@ def _create_the_config_object[T](cls: type[T], strict: bool, frozen: bool) -> ty
     return enforced_dataclass_cfg
 
 
-def _validate_class_input(cls: Any) -> None:
+def _validate_class_input(cls: Any, options: Options) -> None:
     """Everything `cfg` can't make a configuration of, said before anything is changed."""
     if not isinstance(cls, type):
         raise TypeError(f"cfg decorates a class, got {cls!r} (options are keywords: @cfg(strict = False))")
@@ -316,16 +553,33 @@ def _validate_class_input(cls: Any) -> None:
     for name in _CONFIG_MEMBERS:
         if name in names or name in own:
             raise TypeError(f"cfg: {cls.__qualname__}.{name}: the name is taken by what cfg adds ({', '.join(_CONFIG_MEMBERS)}); choose another")
+    #* Two fields with one key: a file could give only one of them.
+    taken: dict[str, str] = {}
+    for name, hint in names.items():
+        if _is_class_variable(hint):
+            continue
+        written = own.get(name)
+        key = (said(written, "key") if isinstance(written, Field) else None) or styled(name, options.keys)
+        if key in taken:
+            raise TypeError(f"cfg: {cls.__qualname__}: the fields {taken[key]} and {name} have the same key {key!r}")
+        taken[key] = name
 
 
-def _annotated_names(cls: type) -> set[str]:
-    """The names the class annotates itself, without evaluating an annotation (they may name classes not made yet)."""
+def _annotated_names(cls: type) -> dict[str, Any]:
+    """The names the class annotates itself, in the order written, each with its annotation: not evaluated where that can't be (it may name a class not made yet)."""
     try:
         if sys.version_info >= (3, 14):
-            return set(annotationlib.get_annotations(cls, format = annotationlib.Format.FORWARDREF))
-        return set(inspect.get_annotations(cls))            # 3.13 has evaluated them: a section named before it is written is quoted
+            return dict(annotationlib.get_annotations(cls, format = annotationlib.Format.FORWARDREF))
+        return dict(inspect.get_annotations(cls))           # 3.13 has evaluated them: a section named before it is written is quoted
     except Exception:
-        return set()
+        return {}
+
+
+def _is_class_variable(hint: Any) -> bool:
+    """Whether an annotation is a `ClassVar` (no field, so no key), also as the text of a quoted one."""
+    if isinstance(hint, str):
+        return hint.replace("typing.", "").lstrip().startswith("ClassVar")
+    return hint is ClassVar or get_origin(hint) is ClassVar
 
 
 def _not_inherited(cls: type, **_) -> None:
@@ -340,7 +594,7 @@ def _not_inherited(cls: type, **_) -> None:
 class _Sections:
     """
     `__cfg_sections__` of a configuration, worked out when it is first read: the fields whose type
-    is another configuration (`Database`, `Database | None`), field name -> that class, and the
+    is another configuration (`Database`, `Database | None`), the field's key -> that class, and the
     fields that hold several, marked by how: `list[Server]`, `tuple[Server, ...]`, `dict[str, Server]`.
     Not at decoration: an annotation may name a section written further down, which doesn't exist yet
     then (quoted on 3.13, which evaluates an annotation where it stands). The first read replaces
@@ -350,11 +604,11 @@ class _Sections:
     def __get__(self, _: object, owner: type) -> dict[str, Any]:
         sections: dict[str, Any] = {}
         hints = get_type_hints(owner, include_extras = True)
-        for name in getattr(owner, "__dataclass_fields__", {}):
-            found = section_of(hints.get(name))
+        for field_ in fields(owner):
+            found = section_of(hints.get(field_.name))
             if found is not None and is_config(found[1]):
                 kind, section = found
-                sections[name] = {"one": section, "list": list[section], "tuple": tuple[section, ...],      # type: ignore[valid-type]
+                sections[key_of(owner, field_)] = {"one": section, "list": list[section], "tuple": tuple[section, ...],      # type: ignore[valid-type]
                                   "dict": dict[str, section]}[kind]                                          # type: ignore[valid-type]
         setattr(owner, SECTIONS_ATTR, sections)
         return sections
