@@ -18,6 +18,7 @@ Since 2026-11-15, one file per rule built then (the same data in every format of
 | `fleet.json` / `.toml` / `.yaml` | a list of sections, each with a section of its own (`servers: list[Server]`, `[[servers]]` and `[servers.tls]` in TOML). No ini: it can't hold one |
 | `schedule.*` (all five) | a `date`, a `time` and a `datetime` (TOML's own literals, YAML's bare date, text elsewhere), and a dictionary of sections (`[regions.eu]`) |
 | `layers/base.toml`, `prod.yaml`, `local.ini` | three layers of one configuration, loaded in that order: a section merged, a value and a list replaced |
+| `keys.*` (all five, since 2026-11-16) | keys that are no Python names: a reserved word (`class`), capitals and dashes (`X-Request-Id`), a kebab-case section (`[rate-limit]`, `max-size`). `tests/simulation.py` also asks them for the line of a key (`sources_of`) and makes a template of their schema |
 
 ## Format traps in these files
 
