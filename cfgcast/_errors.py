@@ -52,7 +52,7 @@ class ConfigError(InvalidDataError, ValueError):
         self.schema = schema
         self.entries = problems
         super().__init__(
-            _message(problems, f"in {self.file} for {getattr(schema, '__name__', schema)}", True, len(self.files) > 1),
+            _message(problems, f"in {self.file} for {getattr(schema, '__name__', schema)}", True, self.files),
             context = "config"
             )
         return
@@ -115,8 +115,7 @@ class ConfigWarning(InvalidDataWarning):
         head = (f"{style(count, 'bold_red')} unknown key{'s' if count != 1 else ''} ignored in {style(self.file, 'cyan')} "
                 f"for {style(getattr(self.schema, '__name__', self.schema), 'bold_yellow')}"
                 f"{f' ({style(located, 'cyan')})' if located else ''}:")
-        layered = len(self.files) > 1
-        return "\n".join([head, *(f"    -> {_from(p, layered)}{style(_where(p['loc'], True), 'bold_red')}" for p in self.entries)])
+        return "\n".join([head, *(f"    -> {_from(p, self.files)}{style(_where(p['loc'], True), 'bold_red')}" for p in self.entries)])
 
     def errors(self, *, include_input: bool = True, include_context: bool = True) -> list[Problem]:
         """The ignored keys, in the shape of `ConfigError.errors()`. There is never an `input`."""
@@ -191,12 +190,21 @@ def _sources(file: str | os.PathLike[str] | Sequence[str]) -> tuple[str, ...]:
     return tuple(str(name) for name in file)
 
 
-def _from(problem: Problem, layered: bool) -> str:
-    """`prod.toml: ` in front of a line, where a load had several sources: the one this value came from."""
-    return f"{problem['loc'][0]}: " if layered and problem["loc"] else ""
+def _from(problem: Problem, files: tuple[str, ...]) -> str:
+    """
+    What stands in front of a line: `app.toml:12: ` where the line of the value is known (an editor opens
+    it with a click), the source alone (`prod.toml: `, `APP_DB__PORT: `) where the head of the message
+    doesn't say it already (several sources, or a variable), else nothing.
+    """
+    if not problem["loc"]:
+        return ""
+    line = (problem.get("ctx") or {}).get("line")
+    if isinstance(line, int):
+        return f"{problem['loc'][0]}:{line}: "
+    return f"{problem['loc'][0]}: " if files != (problem["loc"][0],) else ""
 
 
-def _message(problems: list[Problem], where: str, has_file: bool, layered: bool = False) -> str:
+def _message(problems: list[Problem], where: str, has_file: bool, files: tuple[str, ...] = ()) -> str:
     count = len(problems)
     head = f"{count} problem{'s' if count != 1 else ''} {where}:"
-    return "\n".join([head, *(f"    {_from(p, layered)}{_where(p['loc'], has_file)}: {p['msg']}" for p in problems)])
+    return "\n".join([head, *(f"    {_from(p, files) if has_file else ''}{_where(p['loc'], has_file)}: {p['msg']}" for p in problems)])
