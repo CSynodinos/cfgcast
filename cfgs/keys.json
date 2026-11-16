@@ -1,0 +1,10 @@
+{
+    "name": "edge",
+    "class": "gold",
+    "X-Request-Id": "trace",
+    "rate-limit": {
+        "max-size": 10,
+        "per-user": true,
+        "retry-after": [1, 5, 30]
+    }
+}
