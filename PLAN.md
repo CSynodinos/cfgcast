@@ -247,7 +247,11 @@ After 1 to 4 were built. Fixed, each with a test ("found by review" in the tests
 
 ## Next features (planned 2026-11-15; in this order, decided by the owner)
 
-### 1. A file is written whole or not at all, also when the disk fails
+**Built on 2026-11-16: 1 to 5, 7 to 14, and the load-time overrides of 15**, one at a time, each with its tests.
+6 (durations) waits on enforced; the two maybes of 15 are kept. Each plan below is as it was written; where what
+was built differs, "Built on 2026-11-16" below says how. What is left: "What is left", at the end.
+
+### 1. A file is written whole or not at all, also when the disk fails (built 2026-11-16)
 
 Rule 4 holds today for everything known before the file is opened. A full disk, a quota or a crash while
 writing still leaves half a file in place of a good one.
@@ -274,7 +278,7 @@ writing still leaves half a file in place of a good one.
   a link and its target changes; a directory as the target is refused before anything is written.
 - CLAUDE.md: the "full disk" line of the known issues goes; rule 4 holds without the "before".
 
-### 2. Problems from `__post_init__`
+### 2. Problems from `__post_init__` (built 2026-11-16)
 
 Today a `__post_init__` that raises anything but an `InvalidDataError` leaves `_build`, and every problem
 gathered so far is lost (tried on 2026-11-15: `name: 1` and `replica.port: 0` were not reported, the
@@ -304,7 +308,7 @@ gathered so far is lost (tried on 2026-11-15: `name: 1` and `replica.port: 0` we
   the `__cause__`; a `KeyboardInterrupt` going through; the top level; an item of a list.
 - README ("When something is wrong"): the new type and an example. CLAUDE.md: the problem types.
 
-### 3. Optional files in a list: `optional("local.toml")`
+### 3. Optional files in a list: `optional("local.toml")` (built 2026-11-16)
 Decided 2026-11-15: a file of the list may be marked optional; nothing else may be missing.
 
 ```python
@@ -331,7 +335,7 @@ app = load_cfg(["base.toml", "prod.toml", optional("local.toml")], App)
   optional and none there; the marker refused by `os.fspath`; `App.load([...])` too.
 - README: "Several files, in layers" gains it; "Not yet" loses "a layer that may be absent".
 
-### 4. `.env` files
+### 4. `.env` files (built 2026-11-16)
 
 ```python
 app = load_cfg("app.toml", App, env_prefix = "APP_", env_file = ".env")
@@ -356,7 +360,7 @@ app = load_cfg("app.toml", App, env_prefix = "APP_", env_file = ".env")
   layers before the environment's.
 - Not now: several `.env` files (`.env`, `.env.local`), `env_file` on `@cfg`.
 
-### 5. `@cfg(env_prefix = "APP_")`
+### 5. `@cfg(env_prefix = "APP_")` (built 2026-11-16)
 
 - The prefix as an option of the class: `App.load("app.toml")` and `load_cfg("app.toml", App)` read
   `APP_*` without saying so. `env_prefix` given on the call wins over the class's; `env = {}` reads no
@@ -385,7 +389,7 @@ the writers refuse a `timedelta`.
   the rule above. A round trip test in every format, and a `cfgs/` case in every format.
 - Not now: months and years (not a fixed length), a `PositiveDuration` (an `Annotated` check does it).
 
-### 7. Checkers see `load` and `from_dict`
+### 7. Checkers see `load` and `from_dict` (built 2026-11-16)
 **Decided 2026-11-15: yes, a and b.** The base's name is still to choose (`Loadable` proposed; `CfgMethods`, `Loads`
 are others).
 
@@ -405,7 +409,7 @@ A checker reads `@dataclass_transform` for the fields, but doesn't see members a
 - Proposed: a and b both (b is a few lines). The name of the base: the owner's call.
 - A test as enforced has (`tests/test_static_typing.py`): mypy on a sample file, and pyright if installed.
 
-### 8. JSON serialisation
+### 8. JSON serialisation (built 2026-11-16)
 
 What there is: `write(app, "x.json")` (complete: dates, paths, `Decimal`, enums, a `SecretStr` as its real
 text), and `ConfigError.json()` / `errors()` (secrets masked). What is missing, tried on 2026-11-15:
@@ -430,7 +434,7 @@ Plan:
 - `NaN` and the infinities: the JSON writer refuses them (`allow_nan = False`), but with `json`'s own message;
   one of cfgcast's that names the key.
 
-### 9. `cfgcast.field`: what a field says beyond its type
+### 9. `cfgcast.field`: what a field says beyond its type (built 2026-11-16)
 Not asked for by itself: the place where 10, 14 and 15 put what they need to know about a field.
 
 ```python
@@ -449,7 +453,7 @@ class Pool:
 - Public: `cfgcast.field`. Its options are checked at the decorator (a `key` that isn't text, two fields with
   one key: `TypeError`).
 
-### 10. Keys that aren't Python names
+### 10. Keys that aren't Python names (built 2026-11-16)
 `max-size`, `log-level`, `class`: common in TOML and YAML, and no field can have that name.
 
 - Per field: `field(key = "max-size")`. Per class: `@cfg(keys = "kebab")` reads every field `max_size` as
@@ -466,7 +470,7 @@ class Pool:
 - `__cfg_sections__` is by key. Two fields with one key (`max_size` and `max-size` under `kebab`): `TypeError`.
 - Tests in every format, a `cfgs/` case in every format (rule 1).
 
-### 11. A section of a bigger file
+### 11. A section of a bigger file (built 2026-11-16)
 ```python
 app = load_cfg("pyproject.toml", App, section = "tool.myapp")
 ```
@@ -484,7 +488,7 @@ app = load_cfg("pyproject.toml", App, section = "tool.myapp")
 - Not for `write`: it would write the whole `pyproject.toml` again, without its comments. Refused with a
   message that says so.
 
-### 12. Secrets from files
+### 12. Secrets from files (built 2026-11-16)
 Docker, compose and kubernetes give a secret as a file (`/run/secrets/db_password`), and the
 convention of the official images is a `_FILE` variable: `POSTGRES_PASSWORD_FILE`.
 
@@ -501,7 +505,7 @@ convention of the official images is a `_FILE` variable: `POSTGRES_PASSWORD_FILE
 - Then, if asked: `secrets_dir = "/run/secrets"` (pydantic's: each file named after a key, `db__password`).
 - Tests: the variable, the trailing line break, both given, the file missing, a `_FILE` field of its own.
 
-### 13. Where each value came from, with its line
+### 13. Where each value came from, with its line (built 2026-11-16)
 Decided 2026-11-15: yes, **with the file and the line**.
 
 ```python
@@ -528,7 +532,7 @@ Decided 2026-11-15: yes, **with the file and the line**.
 - Cost: the locators run only where a line is wanted (on an error, or when the sources are kept: a
   `load_cfg(..., keep_sources = True)`?, the owner's call), so a load that goes well costs nothing more.
 
-### 14. A template file
+### 14. A template file (built 2026-11-16)
 ```python
 write_template(App, "app.toml")
 ```
@@ -549,7 +553,7 @@ write_template(App, "app.toml")
 ### 15. Maybe, and to be explained
 Not decided (2026-11-15). Kept so the reasons are at hand.
 
-**Overrides at load time** (explanation asked). A value for one run, from code or the command line, without
+**Overrides at load time** (explanation asked; **yes, 2026-11-16, and built**: see below). A value for one run, from code or the command line, without
 editing a file:
 
 ```python
@@ -575,6 +579,81 @@ today, so the other member is said to be "expected a section". Try the section, 
 **Not proposed**: interpolation (`${db.host}`, `${env:HOME}`: a language of its own, and a value is no longer
 what is written), reloading on change, `include` directives, keeping comments when writing, a JSON Schema
 (proposed in the first list; not answered: here until it is).
+
+## Built on 2026-11-16: what was decided on the way
+
+The owner, 2026-11-16: line numbers in error messages **yes**; lines **always tracked** (cheap: no `keep_sources`
+option); load-time overrides **yes**.
+
+- **The message** (13): every line of a problem starts with `source:line: ` where the line is known, for one file
+  too (`    app.toml:12: db.port: ...`; it was `    db.port: ...`). Without a line, several sources: `source: `; one
+  file: nothing. The line is `ctx["line"]`; `loc` stays the source and the key path (pydantic's shape).
+- **A line that is wrong is worse than none** (`_locate.py`): a locator that fails says nothing, a path it found that
+  the parsed data doesn't have is dropped, and a key without a line of its own (an item of an ini list, a key of a
+  TOML inline table, a missing key) takes the line of the nearest key above it.
+- **`sources_of(obj) -> {key path: where}`**: `"file:line"`, the variable, `".env:12"`, `"overrides"`, `"(default)"`.
+  Kept on every built instance (`__cfg_sources__`, in its `__dict__`); a `ValueError` for one not loaded.
+- **The order of the sources**: files < `env_file` < the environment < `overrides`.
+- **Overrides** (15): `load_cfg(..., overrides = {"db": {"port": 9090}})` takes **nested dictionaries**, as `write`
+  does (not the dotted keys of the first sketch: one shape for both). `parse_overrides(arguments, schema)` takes the
+  schema, to know which field is a list or a dictionary and to match a key without regard to case. A problem names
+  `overrides`.
+- **`optional`** (3): also for `env_file`. `os.fspath` of the marker is refused.
+- **`_FILE`** (12): as planned. The variable is the source of the value.
+- **A missing section** (11) is a `missing` problem with the message `missing section`, raised before the build (see
+  the review). `section` is not an option of `write`.
+- **`Loadable`** (7): the name of the base; `from_dict(App, data)` the function. `Config` stays as its old name inside.
+- **Keys** (10): only `"kebab"`. `class_` is `class` under it (a trailing `_` taken off).
+- **`__post_init__`** (2): as planned. A short secret is masked wherever its letters stand in the exception's text
+  (`re**********lica` for the secret `p`): kept, it is the price of never showing one.
+- **Templates** (14): a commented key is `#key = value` with **no space**, a note is `# note` (a program can tell
+  them apart: the simulation uncomments every `#key` and loads the file). The note is above the key, not after it
+  (ini has whole-line comments only). A `None` default is commented out too (TOML and ini have no null). A schema
+  that holds itself is cut after one example. YAML: a section with nothing active below it is `key: {}` (required,
+  nothing required inside) or commented out whole with its keys (it would be null otherwise). The text alone
+  (`template_text`) is not public yet.
+- **JSON** (8): `to_text` masks secrets, `write` doesn't; `to_dict(plain = True)` masks them too.
+
+## Code review of 2026-11-16
+
+After everything above. With the owner's rewrite of the writers on `enforced.dispatch` (2026-11-16), which stays.
+
+Fixed, each with a test:
+
+- **The dispatchers were made at every call** (inside `_plain`, `_key`, `_toml_value`, `_ini_text`, `plain_json`):
+  registering the handlers again each time cost 240 to 580 µs a value, so 10 000 keys took 4 s (JSON) to 10 s (TOML),
+  and `to_text` of a ten-key configuration 3 to 6 ms. They are module-level now, made once (`_plain_of`, `_json_of`,
+  `_key_of`, `_toml_value`, `_ini_text`), `mask` / `where` a second argument: 6 to 15 ms for the 10 000 keys.
+- **A key no file can hold was shown in the message** (`{node} is not a valid key`), after `_plain`: a tuple with a
+  `SecretStr` in it was its real text. The type is named now. The same for TOML's "no null" message, which named
+  the value (`None in db.keys: ...`) and now starts with the key, as every writer's message does.
+
+Seen and left (the owner's call, or small):
+
+- A missing `section` raises its `ConfigError` before the build: the other problems of that load are not gathered
+  with it (rule 2 bends here). To gather them the build would have to run on the layers that do have the section.
+- `parse_overrides` keeps a key the schema doesn't have as written, also when its first part matched without case
+  (`DB.nope=1` stays `DB.nope`, so the problem says `DB` is unknown, not `db.nope`).
+- `write(overrides: dict)` and `to_text` want a `dict`; `load_cfg(overrides: Mapping)` any mapping. One of the two.
+- `save_template` looks for the file, then writes: a file made between the two is replaced. An exclusive create
+  would close it, at the cost of the atomic replace.
+- `__cfg_sources__` is in the instance's `__dict__`: `vars(app)` shows it, pickle and `copy` keep it.
+- `to_dict` / `write` turn only `@cfg` sections into dictionaries; build and the template take any dataclass as a
+  section (`_hints.section_of`). One rule for both is wanted.
+- YAML: `db:` with every key below it commented out is null, and a null where a section belongs is a `section`
+  problem. Should a null for a section that isn't `| None` be an empty section? The template works around it.
+- `_build._hints` and `_Sections` call `get_type_hints` unguarded: an annotation that can't be resolved is Python's
+  own `NameError` at the first load, not a `ConfigError`.
+
+## What is left
+
+- **6. Durations**: waits on enforced (above).
+- **Maybe** (15): renamed keys (`field(was = ...)`), a union with a section.
+- **Small, from what was built**: a public `template_text` (print a template); several `.env` files and `env_file`
+  on `@cfg`; `secrets_dir`; one section per file in a list; an `fsync` of the directory after a write;
+  `keys = ` a function; "did you mean `max-size`?" for a field's Python name in a file.
+- **Not proposed / not answered**: a JSON Schema, interpolation, reloading, `include`, keeping comments when writing.
+- The open questions of the review above.
 
 ## Later
 
