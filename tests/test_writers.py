@@ -172,7 +172,7 @@ def test_what_no_format_can_hold_is_a_type_error_before_the_file_is_opened(tmp_p
     for fmt in ("json", "toml", "ini", "yaml"):
         with pytest.raises(TypeError, match = "can't be written"):
             WRITERS[fmt](tmp_path / f"x.{fmt}", {"when": object()})
-        with pytest.raises(TypeError, match = "a key of a configuration"):
+        with pytest.raises(TypeError, match = "key for a configuration file"):
             WRITERS[fmt](tmp_path / f"y.{fmt}", {(1, 2): "x"})
         assert not (tmp_path / f"x.{fmt}").exists() and not (tmp_path / f"y.{fmt}").exists()
 
@@ -296,3 +296,95 @@ def test_ini_refuses_a_list_of_one_empty_text(tmp_path):
         write_ini(tmp_path / "x.ini", {"l": [""]})
     write_ini(tmp_path / "x.ini", {"l": ["", "a"]})                 # two items: the comma tells them apart
     assert read_ini(tmp_path / "x.ini")["l"] == ", a"
+
+
+# ── a file is written whole or not at all (_save) ───────────────────────────
+
+def _temporaries(directory: Path) -> list[str]:
+    return [path.name for path in directory.iterdir() if path.name.endswith(".tmp")]
+
+
+@pytest.mark.parametrize("broken", ["fsync", "replace"])
+def test_an_error_while_writing_leaves_the_old_file_and_no_temporary_one(tmp_path, monkeypatch, broken):
+    import os
+
+    def fails(*_, **__):
+        raise OSError(28, "No space left on device")
+
+    path = tmp_path / "x.json"
+    path.write_text("old")
+    monkeypatch.setattr(os, broken, fails)
+    with pytest.raises(OSError, match = "No space left"):
+        write_json(path, {"a": 1})
+    monkeypatch.undo()
+    assert path.read_text() == "old" and _temporaries(tmp_path) == []
+
+
+def test_an_error_while_writing_a_new_file_leaves_nothing(tmp_path, monkeypatch):
+    import os
+
+    def fails(*_, **__):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fsync", fails)
+    with pytest.raises(OSError):
+        write_toml(tmp_path / "new.toml", {"a": 1})
+    monkeypatch.undo()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason = "permission bits are POSIX's")
+def test_a_file_that_was_there_keeps_its_mode_and_a_new_one_follows_the_umask(tmp_path):
+    import os
+    old = tmp_path / "old.json"
+    old.write_text("{}")
+    old.chmod(0o600)
+    write_json(old, {"a": 1})
+    assert old.stat().st_mode & 0o777 == 0o600 and read_json(old) == {"a": 1}
+
+    before = os.umask(0o027)
+    try:
+        write_json(tmp_path / "new.json", {"a": 1})
+    finally:
+        os.umask(before)
+    assert (tmp_path / "new.json").stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason = "a symbolic link needs a privilege on Windows")
+def test_a_symbolic_link_stays_a_link_and_its_target_is_written(tmp_path):
+    (tmp_path / "real").mkdir()
+    target = tmp_path / "real" / "app.json"
+    target.write_text("{}")
+    link = tmp_path / "app.json"
+    link.symlink_to(target)
+    write_json(link, {"a": 1})
+    assert link.is_symlink() and read_json(target) == {"a": 1}
+    assert _temporaries(tmp_path) == [] and _temporaries(tmp_path / "real") == []
+
+
+def test_a_directory_is_refused_before_anything_is_written(tmp_path):
+    with pytest.raises(IsADirectoryError, match = "is a directory"):
+        write_json(tmp_path, {"a": 1})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_directory_that_isnt_there_is_an_error_and_nothing_is_made(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        write_json(tmp_path / "missing" / "x.json", {"a": 1})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_key_no_file_can_hold_is_named_by_its_type_and_never_its_text():
+    with pytest.raises(TypeError) as caught:
+        _plain({(SecretStr("hunter2"), "b"): 1})
+    assert "hunter2" not in str(caught.value)
+    assert "a list is not a valid key" in str(caught.value)
+
+
+def test_a_none_in_a_toml_list_names_its_key_and_no_value(tmp_path):
+    file = tmp_path / "out.toml"
+    with pytest.raises(ValueError) as caught:
+        write_toml(file, {"db": {"keys": [SecretStr("hunter2"), None]}})
+    assert str(caught.value).startswith("db.keys: TOML has no null")
+    assert "hunter2" not in str(caught.value)
+    assert not file.exists()

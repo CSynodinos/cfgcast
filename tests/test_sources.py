@@ -1,6 +1,7 @@
 """Several sources for one configuration: files in layers, and environment variables over them (`_sources`, `_load`)."""
 from dataclasses import field
 from pathlib import Path
+from typing import Annotated
 import json
 import pickle
 import warnings
@@ -8,8 +9,9 @@ import warnings
 import pytest
 
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, ConfigWarning, cfg, load_cfg
-from cfgcast._sources import Sources, layer, read_env
+from cfgcast import ConfigError, ConfigWarning, cfg, load_cfg, optional
+from cfgcast._sources import Sources, layer, read_env, read_env_file
+import os
 
 
 @cfg
@@ -126,8 +128,8 @@ def test_a_problem_names_the_file_its_value_came_from(tmp_path):
     assert error.files == (str(base), str(prod)) and error.file == f"{base}, {prod}"
     lines = str(error).splitlines()
     assert lines[0] == f"9 problems in {base}, {prod} for App:"
-    assert f"    {base}: db.port: invalid 'Port': must be between 1 and 65535" in lines
-    assert f"    {prod}: db.host: missing key" in lines
+    assert f"    {base}:1: db.port: invalid 'Port': must be between 1 and 65535" in lines
+    assert f"    {prod}:1: db.host: missing key" in lines
     back = pickle.loads(pickle.dumps(error))
     assert back.files == error.files and str(back) == str(error) and back.errors() == error.errors()
 
@@ -137,7 +139,7 @@ def test_one_file_reads_as_it_always_did(tmp_path):
     for file in (base, [base]):
         error = _error(file, App)
         assert error.file == str(base) and error.files == (str(base),)
-        assert str(error) == f"1 problem in {base} for App:\n    name: expected type: 'str', got type 'int'"
+        assert str(error) == f"1 problem in {base} for App:\n    {base}:1: name: expected type: 'str', got type 'int'"
 
 
 def test_ignored_keys_name_their_file_too(tmp_path):
@@ -145,7 +147,7 @@ def test_ignored_keys_name_their_file_too(tmp_path):
     with pytest.warns(ConfigWarning) as caught:
         load_cfg([base, prod], Loose)
     warning = caught[0].message
-    assert str(warning) == f"2 unknown keys ignored in {base}, {prod} for Loose ({__file__}:{Loose.__firstlineno__}):\n    -> {base}: old\n    -> {prod}: db.new"
+    assert str(warning) == f"2 unknown keys ignored in {base}, {prod} for Loose ({__file__}:{Loose.__firstlineno__}):\n    -> {base}:1: old\n    -> {prod}:1: db.new"
     assert caught[0].filename == __file__ and warning.files == (str(base), str(prod))
     assert str(pickle.loads(pickle.dumps(warning))) == str(warning)
 
@@ -229,7 +231,7 @@ def test_a_problem_names_the_variable(tmp_path):
     assert error.files == (str(base), "APP_*")
     assert "    APP_DB__PORT: db.port: invalid 'Port'" in str(error)
     assert "    APP_REPLICAS: replicas: expected a list of sections, got str" in str(error)
-    assert f"    {base}: tags[0]: " in str(error)
+    assert f"    {base}:1: tags[0]: " in str(error)
 
 
 def test_a_secret_from_the_environment_is_masked(tmp_path):
@@ -267,4 +269,278 @@ def test_env_options_are_checked(tmp_path):
 
 def test_read_env_gives_one_layer_per_variable_in_the_order_of_their_names():
     env = {"APP_TAGS": "a", "APP_DB__PORT": "1", "APP_X": "1"}
-    assert read_env(App, "APP_", env) == [("APP_DB__PORT", {"db": {"port": "1"}}), ("APP_TAGS", {"tags": ["a"]})]
+    assert read_env(App, "APP_", env) == [
+        ("APP_DB__PORT", ("db", "port"), {"db": {"port": "1"}}), ("APP_TAGS", ("tags",), {"tags": ["a"]})]
+
+
+# ── optional files ──────────────────────────────────────────────────────────
+
+def test_an_optional_file_is_read_if_it_is_there_and_left_out_if_not(tmp_path):
+    base, local = _files(tmp_path, base = BASE, local = {"debug": True})
+    assert load_cfg([base, optional(local)], App).debug is True
+    assert load_cfg([base, optional(tmp_path / "nope.json")], App) == load_cfg(base, App)
+    assert App.load([optional(tmp_path / "nope.json"), base]) == load_cfg(base, App)
+    assert load_cfg([base, optional(tmp_path / "no_dir" / "nope.json")], App) == load_cfg(base, App)
+
+
+def test_a_file_not_marked_must_be_there_also_next_to_an_optional_one(tmp_path):
+    (base,) = _files(tmp_path, base = BASE)
+    with pytest.raises(FileNotFoundError):
+        load_cfg([base, optional(tmp_path / "a.json"), tmp_path / "b.json"], App)
+
+
+def test_a_problem_in_an_optional_file_that_is_there_is_a_problem(tmp_path):
+    base, local = _files(tmp_path, base = BASE, local = {"db": {"port": 0}})
+    error = _error([base, optional(local)], App)
+    assert error.errors()[0]["loc"] == [str(local), "db", "port"] and error.files == (str(base), str(local))
+    local.write_text("{ not json")
+    with pytest.raises(json.JSONDecodeError):
+        load_cfg([base, optional(local)], App)
+
+
+def test_only_a_file_that_isnt_there_is_skipped(tmp_path):
+    (base,) = _files(tmp_path, base = BASE)
+    (tmp_path / "dir.json").mkdir()
+    with pytest.raises(OSError):
+        load_cfg([base, optional(tmp_path / "dir.json")], App)
+    if os.name != "nt":
+        (tmp_path / "link.json").symlink_to(tmp_path / "gone.json")     # a broken link: a file that was meant to be there
+        with pytest.raises(FileNotFoundError):
+            load_cfg([base, optional(tmp_path / "link.json")], App)
+    with pytest.raises(ValueError, match = "Cannot infer"):             # the suffix is checked, there or not
+        load_cfg([base, optional(tmp_path / "nope.conf")], App)
+
+
+def test_the_sources_of_an_error_are_the_files_that_were_read(tmp_path):
+    (base,) = _files(tmp_path, base = {"name": "shop"})
+    error = _error([optional(tmp_path / "nope.json"), base, optional(tmp_path / "nope2.json")], App)
+    assert error.files == (str(base),) and error.errors()[0]["loc"] == [str(base), "db"]
+
+
+def test_nothing_read_at_all_is_a_load_from_the_defaults(tmp_path):
+    assert load_cfg(optional(tmp_path / "nope.json"), Pool) == Pool()
+    error = _error([optional(tmp_path / "nope.json")], App)
+    assert error.files == ("(no file)",) and [e["type"] for e in error.errors()] == ["missing", "missing"]
+    assert load_cfg(optional(tmp_path / "nope.json"), App, env_prefix = "A_", env = {"A_NAME": "n", "A_DB__HOST": "h"}).name == "n"
+
+
+def test_the_marker_is_no_path():
+    marker = optional("local.toml")
+    assert repr(marker) == "optional('local.toml')" and optional(Path("a") / "b.toml").path == os.path.join("a", "b.toml")
+    with pytest.raises(TypeError):
+        os.fspath(marker)                                               # type: ignore[call-overload]
+    with pytest.raises(TypeError, match = "optional takes a path"):
+        optional(5)                                                     # type: ignore[arg-type]
+    with pytest.raises(TypeError, match = "in the list"):
+        load_cfg(["a.json", 5], App)                                    # type: ignore[list-item]
+
+
+# ── .env files ──────────────────────────────────────────────────────────────
+
+def _env_file(tmp_path: Path, text: str, name: str = ".env") -> Path:
+    path = tmp_path / name
+    path.write_text(text, encoding = "utf-8")
+    return path
+
+
+def test_the_format_of_an_env_file(tmp_path):
+    text = (
+        "# a comment\n"
+        "\n"
+        "PLAIN=value\n"
+        "export EXPORTED = spaced out   # a comment\n"
+        "HASH=a#b\n"
+        "EMPTY=\n"
+        "ONLY_COMMENT= # nothing\n"
+        "SINGLE='as $written \\n #here'  # after\n"
+        'DOUBLE="tab\\there \\"q\\" back\\\\slash \\x ${HOME}"\n'
+        'MULTI="line one\n'
+        'line two"\n'
+        "TWICE=1\r\n"
+        "TWICE=2\r\n"
+        "URL=postgres://u:p@h/db?x=1\n"
+        )
+    found = read_env_file(_env_file(tmp_path, "\ufeff" + text))
+    assert {key: value for key, (value, _) in found.items()} == {
+        "PLAIN": "value", "EXPORTED": "spaced out", "HASH": "a#b", "EMPTY": "", "ONLY_COMMENT": "",
+        "SINGLE": "as $written \\n #here", "DOUBLE": 'tab\there "q" back\\slash \\x ${HOME}',
+        "MULTI": "line one\nline two", "TWICE": "2", "URL": "postgres://u:p@h/db?x=1",
+        }
+    assert found["PLAIN"][1] == 3 and found["MULTI"][1] == 10 and found["TWICE"][1] == 13
+
+
+@pytest.mark.parametrize("text, said", [
+    ("A=1\nhunter2 is not a line\n", ":2: not a KEY=VALUE line"),
+    ("A='hunter2\n", ":1: the quote of A is never closed"),
+    ('A="hunter2" trailing\n', ":1: text after the closing quote of A"),
+    ("=hunter2\n", ":1: not a KEY=VALUE line"),
+    ])
+def test_a_line_that_is_no_variable_is_said_without_its_text(tmp_path, text, said):
+    with pytest.raises(ValueError) as info:
+        read_env_file(_env_file(tmp_path, text))
+    assert str(info.value).endswith(said) and "hunter2" not in str(info.value)
+
+
+def test_an_env_file_is_over_the_files_and_under_the_environment(tmp_path):
+    (base,) = _files(tmp_path, base = {**BASE, "debug": False, "tags": ["file"]})
+    env_file = _env_file(tmp_path, "APP_DB__PORT=81\nAPP_DEBUG=yes\napp_name=from file\nOTHER=1\nAPP_NOPE=1\nAPP_TAGS=a, b\n")
+    app = load_cfg(base, App, env_prefix = "APP_", env_file = env_file, env = {"APP_DB__PORT": "82"})
+    assert (app.db.port, app.debug, app.name, app.tags) == (82, True, "from file", ["a", "b"])
+    assert App.load(base, env_prefix = "APP_", env_file = env_file, env = {}).db.port == 81
+    assert "APP_DB__PORT" not in os.environ                         # the process environment is never changed
+    assert load_cfg([], App, env_prefix = "APP_", env_file = _env_file(tmp_path, "APP_NAME=n\nAPP_DB__HOST=h\n", "only.env"), env = {}).name == "n"
+
+
+def test_a_problem_of_an_env_file_names_the_file_and_the_line(tmp_path):
+    (base,) = _files(tmp_path, base = BASE)
+    env_file = _env_file(tmp_path, "# settings\nAPP_DEBUG=maybe\n\nAPP_DB__PORT=0\nAPP_DB__PASSWORD='hunter2'\n")
+    error = _error(base, App, env_prefix = "APP_", env_file = env_file, env = {"APP_NAME": ""})
+    assert error.files == (str(base), str(env_file), "APP_*")
+    port = next(e for e in error.errors() if e["loc"][1:] == ["db", "port"])
+    assert port["loc"][0] == str(env_file) and port["ctx"]["line"] == 4
+    assert f"    {env_file}:4: db.port: " in str(error) and f"    {env_file}:2: debug: " in str(error)
+    assert "hunter2" not in str(error) and "hunter2" not in error.json()
+
+
+def test_an_env_file_must_be_there_unless_it_is_optional_and_needs_a_prefix(tmp_path):
+    (base,) = _files(tmp_path, base = BASE)
+    with pytest.raises(FileNotFoundError):
+        load_cfg(base, App, env_prefix = "APP_", env_file = tmp_path / ".env", env = {})
+    assert load_cfg(base, App, env_prefix = "APP_", env_file = optional(tmp_path / ".env"), env = {}) == load_cfg(base, App)
+    present = _env_file(tmp_path, "APP_DEBUG=1\n")
+    assert load_cfg(base, App, env_prefix = "APP_", env_file = optional(present), env = {}).debug is True
+    with pytest.raises(TypeError, match = "env_file is read only with an env_prefix"):
+        load_cfg(base, App, env_file = present)
+    with pytest.raises(TypeError, match = "env_file must be a path"):
+        load_cfg(base, App, env_prefix = "APP_", env_file = 5)        # type: ignore[arg-type]
+
+
+# ── @cfg(env_prefix = ...) ──────────────────────────────────────────────────
+
+@cfg(env_prefix = "SHOP_")
+class Prefixed:
+    name: str = "n"
+    pool: Pool = field(default_factory = Pool)
+
+
+@cfg(env_prefix = "DB_")
+class PrefixedSection:
+    port: int = 1
+
+
+@cfg
+class Holder:
+    section: PrefixedSection = field(default_factory = PrefixedSection)
+
+
+def test_a_class_with_a_prefix_reads_the_environment_without_being_told(tmp_path, monkeypatch):
+    (base,) = _files(tmp_path, base = {"name": "file"})
+    monkeypatch.setenv("SHOP_POOL__SIZE", "81")
+    monkeypatch.setenv("APP_NAME", "other")
+    assert load_cfg(base, Prefixed).pool.size == 81 and Prefixed.load(base).pool.size == 81
+    assert load_cfg([], Prefixed).pool.size == 81                     # the environment alone
+    assert load_cfg(base, Prefixed, env = {}).pool.size == 1       # env = {}: no variables
+    assert load_cfg(base, Prefixed, env = {"SHOP_NAME": "handed"}).name == "handed"
+    assert load_cfg(base, Prefixed, env_prefix = "APP_").name == "other"        # the call's prefix wins
+    assert load_cfg(base, Prefixed, env_file = _env_file(tmp_path, "SHOP_NAME=dotenv\n"), env = {}).name == "dotenv"
+    assert Prefixed.from_dict({"name": "d"}).pool.size == 1        # from_dict builds what it is given
+
+
+def test_only_the_prefix_of_the_class_that_is_loaded_counts(tmp_path, monkeypatch):
+    (base,) = _files(tmp_path, base = {})
+    monkeypatch.setenv("DB_PORT", "81")
+    assert load_cfg(base, Holder).section.port == 1                 # a section's prefix is not read
+    assert load_cfg(base, PrefixedSection).port == 81               # loaded by itself, it is
+
+
+def test_a_prefix_that_is_no_text_is_refused_at_the_decorator():
+    with pytest.raises(TypeError, match = "env_prefix must be text"):
+        cfg(env_prefix = 5)                                           # type: ignore[call-overload]
+
+
+# ── secrets from files: a variable with _FILE ───────────────────────────────
+
+@cfg
+class _Db:
+    password: SecretStr
+    hosts: list[str] = field(default_factory = list)
+    key_file: str = "id_rsa"                                        # a field that really ends in _file
+
+
+@cfg
+class _Service:
+    name: str
+    db: _Db
+    token: SecretStr = SecretStr("none")
+
+
+def _secret(tmp_path, name: str, text: str) -> str:
+    path = tmp_path / name
+    path.write_text(text, encoding = "utf-8")
+    return str(path)
+
+
+def test_a_file_variable_gives_the_text_of_its_file(tmp_path):
+    env = {"APP_DB__PASSWORD_FILE": _secret(tmp_path, "pw", "hunter2\n"), "app_token_file": _secret(tmp_path, "tok", "t0ken"),
+           "APP_NAME": "svc", "APP_DB__HOSTS_FILE": _secret(tmp_path, "hosts", "a, b\n")}
+    service = load_cfg([], _Service, env_prefix = "APP_", env = env)
+    assert service.db.password.get_secret_value() == "hunter2" and service.token.get_secret_value() == "t0ken"
+    assert service.db.hosts == ["a", "b"]
+
+
+def test_only_one_line_break_is_taken_off_and_the_rest_is_kept(tmp_path):
+    env = {"APP_DB__PASSWORD_FILE": _secret(tmp_path, "pw", "  two\nlines\n\n"), "APP_NAME": "svc"}
+    assert load_cfg([], _Service, env_prefix = "APP_", env = env).db.password.get_secret_value() == "  two\nlines\n"
+
+
+def test_a_field_that_ends_in_file_is_a_field_first(tmp_path):
+    env = {"APP_DB__KEY_FILE": "other_key", "APP_DB__PASSWORD": "p", "APP_NAME": "svc",
+           "APP_DB__KEY_FILE_FILE": ""}                             # empty: as good as unset
+    assert load_cfg([], _Service, env_prefix = "APP_", env = env).db.key_file == "other_key"
+
+
+def test_a_field_given_both_ways_is_refused_and_no_value_is_shown(tmp_path):
+    env = {"APP_DB__PASSWORD_FILE": _secret(tmp_path, "pw", "from-file"), "APP_DB__PASSWORD": "from-env", "APP_NAME": "svc"}
+    with pytest.raises(ValueError, match = "APP_DB__PASSWORD and APP_DB__PASSWORD_FILE both give db.password") as caught:
+        load_cfg([], _Service, env_prefix = "APP_", env = env)
+    assert "from-file" not in str(caught.value) and "from-env" not in str(caught.value)
+
+
+def test_a_file_that_is_not_there_names_the_variable_and_the_path(tmp_path):
+    env = {"APP_DB__PASSWORD_FILE": str(tmp_path / "nope"), "APP_NAME": "svc"}
+    with pytest.raises(FileNotFoundError, match = "APP_DB__PASSWORD_FILE: No such file") as caught:
+        load_cfg([], _Service, env_prefix = "APP_", env = env)
+    assert caught.value.filename == str(tmp_path / "nope") and "nope" in str(caught.value)
+
+
+def test_a_file_that_is_no_text_says_so_without_its_content(tmp_path):
+    (tmp_path / "bin").write_bytes(b"\xff\xfesecret")
+    with pytest.raises(ValueError, match = "APP_DB__PASSWORD_FILE: the file it names is not UTF-8 text") as caught:
+        load_cfg([], _Service, env_prefix = "APP_", env = {"APP_DB__PASSWORD_FILE": str(tmp_path / "bin"), "APP_NAME": "svc"})
+    assert "secret" not in str(caught.value)
+
+
+def test_a_problem_of_a_file_variable_names_the_variable_and_masks_the_secret(tmp_path):
+    @cfg
+    class Limits:
+        size: int
+        key: Annotated[SecretStr, "x"] = SecretStr("k")
+
+    env = {"L_SIZE_FILE": _secret(tmp_path, "size", "big"), "L_KEY_FILE": _secret(tmp_path, "key", "s3cret")}
+    with pytest.raises(ConfigError) as caught:
+        load_cfg([], Limits, env_prefix = "L_", env = env)
+    assert [e["loc"] for e in caught.value.errors()] == [["L_SIZE_FILE", "size"]]
+    assert "L_SIZE_FILE: size:" in str(caught.value) and "s3cret" not in str(caught.value)
+
+
+def test_a_file_variable_of_a_section_or_of_nothing_is_ignored(tmp_path):
+    env = {"APP_DB_FILE": _secret(tmp_path, "db", "x"), "APP_NOPE_FILE": str(tmp_path / "absent"), "APP_NAME": "svc",
+           "APP_DB__PASSWORD": "p"}
+    assert load_cfg([], _Service, env_prefix = "APP_", env = env).db.password.get_secret_value() == "p"
+
+
+def test_a_file_variable_in_an_env_file(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"APP_NAME=svc\nAPP_DB__PASSWORD_FILE={_secret(tmp_path, 'pw', 'filed')}\n")
+    service = load_cfg([], _Service, env_prefix = "APP_", env = {}, env_file = env_file)
+    assert service.db.password.get_secret_value() == "filed"

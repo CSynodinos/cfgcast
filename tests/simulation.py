@@ -12,13 +12,14 @@ from dataclasses import FrozenInstanceError
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Literal
-from cfgcast import ConfigError, cfg, load_cfg, to_dict, write
+from cfgcast import ConfigError, cfg, field, load_cfg, sources_of, to_dict, write, write_template
 import sys
 sys.path.append(
     str(Path(__file__).parent.parent.parent)
     )
 from enforced.data_types import Email, PhoneNumber, Port, Probability, SecretStr, Url
 import json
+import re
 import tempfile
 import traceback
 
@@ -196,6 +197,21 @@ class Layered:
     debug: bool
     hosts: list[str]
     db: LayeredDb
+
+
+@cfg(keys = "kebab")                                         # max_size is the key max-size
+class RateLimit:
+    max_size: int
+    per_user: bool
+    retry_after: list[int]
+
+
+@cfg
+class Keys:
+    name: str
+    class_: str = field(key = "class")                       # a reserved word
+    request_id: str = field(key = "X-Request-Id")
+    rate_limit: RateLimit = field(key = "rate-limit")
 
 
 LAYERS = [CFGS / "layers" / name for name in ("base.toml", "prod.yaml", "local.ini")]
@@ -602,7 +618,7 @@ def main() -> int:
             assert found == {("db", "prot"): "bad.json", ("db", "port"): "bad.json", ("debug",): "bad.json",
                              ("hosts", 0): "less.toml", ("db", "host"): "bad.json", ("db", "user"): "bad.json",
                              ("db", "pool"): "bad.json"}, found                   # missing keys name the last file
-            assert error.files == (str(base_only), str(bad)) and f"{bad}: db.port:" in str(error)
+            assert error.files == (str(base_only), str(bad)) and f"{bad}:1: db.port:" in str(error)
 
     # 10. environment variables -------------------------------------------------------------------
     @check("environment variables go over every file, and others are ignored")
@@ -620,6 +636,72 @@ def main() -> int:
         error = raised(lambda: load_cfg(LAYERS, Layered, env_prefix = "SHOP_", env = {"SHOP_DB__PORT": "0"}))
         assert problem_locs(error) == [["SHOP_DB__PORT", "db", "port"]], error.errors()
         assert "SHOP_DB__PORT: db.port: invalid 'Port'" in str(error), str(error)
+
+    # 11. keys that are no Python names -------------------------------------------------------------
+    keys = baseline(CFGS / "keys.json", Keys)
+
+    for fmt in FORMATS:
+        @check(f"load keys.{fmt}: keys that are no Python names")
+        def _(fmt = fmt) -> None:
+            loaded = load_cfg(CFGS / f"keys.{fmt}", Keys)
+            assert loaded == keys, f"differs from keys.json: {loaded}"
+            assert loaded.class_ == "gold" and loaded.request_id == "trace"
+            assert loaded.rate_limit == RateLimit(max_size = 10, per_user = True, retry_after = [1, 5, 30])
+
+        @check(f"write keys that are no Python names as {fmt} and read them back")
+        def _(fmt = fmt) -> None:
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / f"keys.{fmt}"
+                write(keys, path, {"rate-limit": {"max-size": 20}})
+                assert "max-size" in path.read_text() and "max_size" not in path.read_text()
+                assert load_cfg(path, Keys).rate_limit.max_size == 20
+
+    @check("a problem and a variable use the file's key, and the field's name in a file is unknown")
+    def _() -> None:
+        data = to_dict(keys)
+        assert list(data) == ["name", "class", "X-Request-Id", "rate-limit"], data
+        data["rate-limit"]["max-size"] = "many"
+        data["class_"] = data.pop("class")
+        error = raised(lambda: Keys.from_dict(data))
+        assert sorted(loc[1:] for loc in problem_locs(error)) == [["class"], ["class_"], ["rate-limit", "max-size"]]
+        assert "the key of this field is 'class'" in str(error), str(error)
+        loaded = load_cfg(CFGS / "keys.toml", Keys, env_prefix = "EDGE_",
+                          env = {"EDGE_RATE_LIMIT__MAX_SIZE": "3", "EDGE_CLASS": "tin", "EDGE_X_REQUEST_ID": "r"})
+        assert (loaded.rate_limit.max_size, loaded.class_, loaded.request_id) == (3, "tin", "r")
+
+    # 12. where a value came from: the file and the line ------------------------------------------
+    lines = {"json": 6, "toml": 7, "yaml": 6, "ini": 8, "cfg": 8}       # of max-size, in cfgs/keys.*
+
+    for fmt in FORMATS:
+        @check(f"keys.{fmt}: the line of a value, in sources_of and in a problem")
+        def _(fmt = fmt) -> None:
+            path = CFGS / f"keys.{fmt}"
+            sources = sources_of(load_cfg(path, Keys))
+            assert sources["rate-limit.max-size"] == f"{path}:{lines[fmt]}", sources
+            assert sources_of(load_cfg(path, Keys, overrides = {"name": "cli"}))["name"] == "overrides"
+            with tempfile.TemporaryDirectory() as folder:
+                wrong = Path(folder) / f"keys.{fmt}"
+                wrong.write_text(path.read_text().replace("10", '"many"', 1))
+                error = raised(lambda: load_cfg(wrong, Keys))
+                assert f"{wrong}:{lines[fmt]}: rate-limit.max-size" in str(error), str(error)
+
+    # 13. a template of a schema ------------------------------------------------------------------
+    for fmt in ("toml", "yaml", "ini"):
+        @check(f"a template as {fmt}: the required keys are missing, and filled in it loads")
+        def _(fmt = fmt) -> None:
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / f"keys.{fmt}"
+                write_template(Keys, path)
+                error = raised(lambda: load_cfg(path, Keys))
+                assert {problem["type"] for problem in error.errors()} == {"missing"}, str(error)
+                #* YAML: a section with nothing under it would be null, so rate-limit is commented out whole (one problem, not three).
+                assert len(error.errors()) == (4 if fmt == "yaml" else 6), str(error)
+                #* Every key that is commented out is put back: it is '#key', and a note is '# note'.
+                text = re.sub(r"(?m)^(\s*)#(?! )", r"\1", path.read_text())
+                path.write_text(text)
+                loaded = load_cfg(path, Keys)
+                assert loaded == Keys(name = "", class_ = "", request_id = "",
+                                      rate_limit = RateLimit(max_size = 0, per_user = False, retry_after = [])), loaded
 
     # ── the report ──────────────────────────────────────────────────────────────────────────
     marks = {"ok": "✓", "FAIL": "✗", "skip": "-"}

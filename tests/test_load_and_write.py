@@ -217,13 +217,16 @@ NEWER = {"name": "shop", "added": 1, "db": {"host": "h", "added": "hunter2"}}
 def test_every_way_in_warns_and_points_at_the_line_that_called_it(tmp_path):
     file = tmp_path / "new.json"
     file.write_text(json.dumps(NEWER))
-    for read in (lambda: load_cfg(file, Lenient), lambda: Lenient.load(file), lambda: Lenient.from_dict(NEWER)):
+    #* A file's keys have their line (the whole of this one is on line 1), a dictionary's have none.
+    for read, at in ((lambda: load_cfg(file, Lenient), f"{file}:1: "), (lambda: Lenient.load(file), f"{file}:1: "),
+                     (lambda: Lenient.from_dict(NEWER), "")):
         with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
             assert read().db.host == "h"
         assert [w.category for w in caught] == [ConfigWarning]
         assert caught[0].filename == __file__
-        assert str(caught[0].message).endswith(f"for Lenient ({__file__}:{Lenient.__firstlineno__}):\n    -> added\n    -> db.added")
+        assert str(caught[0].message).endswith(
+            f"for Lenient ({__file__}:{Lenient.__firstlineno__}):\n    -> {at}added\n    -> {at}db.added")
         assert "hunter2" not in str(caught[0].message)
 
 

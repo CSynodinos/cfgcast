@@ -8,7 +8,8 @@ import pytest
 from enforced import InvalidDataError
 from enforced.data_types import Port
 from cfgcast import cfg
-from cfgcast._base import OPTIONS_ATTR, SECTIONS_ATTR, Config, is_config
+from cfgcast._base import SECTIONS_ATTR, Config, is_config
+from cfgcast._hints import OPTIONS_ATTR
 
 
 @cfg
@@ -61,7 +62,7 @@ def test_frozen_by_default_and_options_on_the_class():
     assert app.name == "b"
     with pytest.raises(InvalidDataError):
         app.name = 5                                                # type: ignore[assignment]  # still checked
-    assert vars(Database)[OPTIONS_ATTR] == (True, True) and vars(App)[OPTIONS_ATTR] == (False, False)
+    assert vars(Database)[OPTIONS_ATTR] == (True, True, None, None) and vars(App)[OPTIONS_ATTR][:2] == (False, False)
 
 
 def test_sections_are_found_when_first_read_also_one_written_further_down():

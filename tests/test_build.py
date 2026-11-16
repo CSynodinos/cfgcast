@@ -334,3 +334,74 @@ def test_the_warning_leaves_the_place_out_where_it_cant_be_found():
         with pytest.warns(ConfigWarning) as caught:
             build(schema, {"name": "x", "y": 1}, "app.toml")
         assert str(caught[0].message) == f"1 unknown key ignored in app.toml for {schema.__name__}:\n    -> y"
+
+
+# ── a __post_init__ that raises ─────────────────────────────────────────────
+
+@cfg
+class Checked:
+    host: str
+    password: SecretStr = SecretStr("")
+    port: int = 1
+
+    def __post_init__(self) -> None:
+        if self.host == "bad":
+            raise ValueError(f"host may not be 'bad' (password {self.password.get_secret_value()})")
+        if self.host == "stop":
+            raise KeyboardInterrupt
+        if self.host == "quiet":
+            raise RuntimeError
+
+
+@cfg
+class Guarded:
+    name: str
+    main: Checked
+    others: list[Checked] = field(default_factory = list)
+    token: SecretStr = SecretStr("")
+
+    def __post_init__(self) -> None:
+        if self.name == "bad":
+            raise LookupError(f"no {self.name}: {self.token.get_secret_value()} / {self.main.password.get_secret_value()}")
+
+
+def test_every_post_init_that_raises_is_a_problem_next_to_the_others():
+    data = {"name": 1, "main": {"host": "bad"}, "others": [{"host": "h"}, {"host": "bad"}, {"host": "h", "port": "x"}]}
+    error = _error(Guarded, data)
+    assert [(e["type"], e["loc"]) for e in error.errors()] == [
+        ("post_init", ["app.toml", "main"]),
+        ("post_init", ["app.toml", "others", 1]),
+        ("type", ["app.toml", "others", 2, "port"]),
+        ("type", ["app.toml", "name"]),
+        ]
+    entry = error.errors()[0]
+    assert entry["msg"].startswith("ValueError: host may not be 'bad'") and "input" not in entry
+    assert entry["ctx"] == {"schema": "Checked", "exception": "ValueError"}
+    assert "    main: ValueError: host may not be 'bad'" in str(error)
+    assert "    others[1]: ValueError" in str(error)
+
+
+def test_the_first_exception_is_the_cause_and_the_top_level_is_the_whole_file():
+    error = _error(Guarded, {"name": "bad", "main": {"host": "h"}})
+    assert isinstance(error.__cause__, LookupError)
+    assert error.errors()[0]["loc"] == ["app.toml"] and "    (the whole file): LookupError: no bad" in str(error)
+    assert _error(Guarded, {"name": 1, "main": {"host": "h"}}).__cause__ is None
+
+
+def test_a_secret_in_the_text_of_an_exception_is_masked():
+    error = _error(Guarded, {"name": "n", "main": {"host": "bad", "password": "hunter2"}})
+    assert "hunter2" not in str(error) and "hunter2" not in error.json() and MASK in str(error)
+    #* The class above knows the secrets of its sections too.
+    error = _error(Guarded, {"name": "bad", "token": "t0ken", "main": {"host": "h", "password": "hunter2"}})
+    assert "hunter2" not in str(error) and "t0ken" not in str(error) and str(error).count(MASK) == 2
+
+
+def test_an_exception_without_text_and_one_that_is_no_exception():
+    assert _error(Guarded, {"name": "n", "main": {"host": "quiet"}}).errors()[0]["msg"] == "RuntimeError"
+    with pytest.raises(KeyboardInterrupt):
+        Guarded.from_dict({"name": "n", "main": {"host": "stop"}})
+
+
+def test_a_direct_construction_raises_the_exception_as_it_is():
+    with pytest.raises(ValueError, match = "host may not be 'bad'"):
+        Checked(host = "bad")
