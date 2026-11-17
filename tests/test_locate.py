@@ -4,7 +4,7 @@ import json
 import pytest
 
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, ConfigWarning, cfg, field, from_dict, load_cfg, sources_of
+from cfgcast import Config, ConfigError, ConfigWarning, field, sources_of
 from cfgcast._locate import locate
 import tomllib
 
@@ -204,21 +204,18 @@ def test_a_path_the_data_does_not_have_is_dropped():
 
 # ── lines in the problems of a file ─────────────────────────────────────────
 
-@cfg
-class Db:
+class Db(Config):
     host: str
     port: Port = 5432
     password: SecretStr = SecretStr("p")
 
 
-@cfg
-class Server:
+class Server(Config):
     host: str
     port: Port
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     db: Db
     hosts: list[str] = field(default_factory = list)
@@ -250,7 +247,7 @@ def test_every_problem_of_a_file_has_its_line(tmp_path, suffix):
     path = tmp_path / f"app.{suffix}"
     path.write_text(BAD[suffix])
     with pytest.raises(ConfigError) as caught:
-        load_cfg(path, App)
+        App.load(path)
     found = {tuple(e["loc"][1:]): e for e in caught.value.errors()}
     assert {where: e["ctx"]["line"] for where, e in found.items()} == {where: lines[suffix] for where, lines in LINES.items()}
     assert all(e["loc"][0] == str(path) for e in found.values())
@@ -265,7 +262,7 @@ def test_ini_problems_have_their_line_and_a_top_level_missing_key_has_none(tmp_p
     path = tmp_path / "app.ini"
     path.write_text("[DEFAULT]\nhosts = a, b\nextra = 1\n\n[db]\nhost = h\nport = 0\n")
     with pytest.raises(ConfigError) as caught:
-        load_cfg(path, App)
+        App.load(path)
     found = {tuple(e["loc"][1:]): (e.get("ctx") or {}).get("line") for e in caught.value.errors()}
     assert found == {("extra",): 3, ("db", "port"): 7, ("name",): None}
     assert f"\n    name: missing key" in str(caught.value) and f"\n    {path}:3: extra: key not in the schema" in str(caught.value)
@@ -276,7 +273,7 @@ def test_layers_each_problem_has_the_line_in_its_own_file(tmp_path):
     base.write_text('name = "n"\n\n[db]\nhost = 3\nport = 1\n')
     prod.write_text('{\n\n"db": {\n\n"port": 0}}')
     with pytest.raises(ConfigError) as caught:
-        load_cfg([base, prod], App, env_prefix = "APP_", env = {"APP_DEBUG": "perhaps"})
+        App.load([base, prod], env_prefix = "APP_", env = {"APP_DEBUG": "perhaps"})
     assert {e["loc"][0]: e.get("ctx", {}).get("line") for e in caught.value.errors()} == {
         "APP_DEBUG": None, str(base): 4, str(prod): 5}
     assert f"    {base}:4: db.host:" in str(caught.value) and "    APP_DEBUG: debug:" in str(caught.value)
@@ -286,13 +283,12 @@ def test_a_section_of_a_file_keeps_the_lines_of_the_file(tmp_path):
     path = tmp_path / "pyproject.toml"
     path.write_text('[project]\nname = "p"\n\n[tool.app]\nname = "n"\n\n[tool.app.db]\nhost = "h"\nport = 0\n')
     with pytest.raises(ConfigError, match = r"pyproject\.toml:9: tool\.app\.db\.port") as caught:
-        load_cfg(path, App, section = "tool.app")
+        App.load(path, section = "tool.app")
     assert caught.value.errors()[0]["ctx"]["line"] == 9
 
 
 def test_an_ignored_key_has_its_line_in_the_warning(tmp_path):
-    @cfg(strict = False)
-    class Loose:
+    class Loose(Config, strict = False):
         name: str
 
     path = tmp_path / "a.yaml"
@@ -306,7 +302,7 @@ def test_an_ignored_key_has_its_line_in_the_warning(tmp_path):
 
 def test_a_dictionary_has_no_lines():
     with pytest.raises(ConfigError) as caught:
-        from_dict(App, {"name": 1, "db": {"host": "h"}})
+        App.from_dict({"name": 1, "db": {"host": "h"}})
     assert str(caught.value) == "1 problem in <dict> for App:\n    name: expected type: 'str', got type 'int'"
     assert "line" not in caught.value.errors()[0].get("ctx", {})
 
@@ -319,7 +315,7 @@ def test_sources_of_a_layered_load(tmp_path):
     base.write_text('name = "n"\nhosts = ["a"]\n\n[db]\nhost = "h"\nport = 1\n\n[[servers]]\nhost = "s"\nport = 2\n')
     prod.write_text("db:\n  host: prod\nhosts:\n  - x\n  - y\n")
     env_file.write_text("# local\nAPP_DB__PASSWORD=s3cret\n")
-    app = load_cfg([base, prod], App, env_prefix = "APP_", env = {"APP_DB__PORT": "9"}, env_file = env_file)
+    app = App.load([base, prod], env_prefix = "APP_", env = {"APP_DB__PORT": "9"}, env_file = env_file)
     assert sources_of(app) == {
         "name": f"{base}:1", "db.host": f"{prod}:2", "db.port": "APP_DB__PORT", "db.password": f"{env_file}:2",
         "hosts": f"{prod}:3", "servers[0].host": f"{base}:9", "servers[0].port": f"{base}:10", "debug": "(default)"}
@@ -329,35 +325,33 @@ def test_sources_of_a_layered_load(tmp_path):
 
 
 def test_sources_of_a_default_section_a_dictionary_of_sections_and_a_section_of_a_file(tmp_path):
-    @cfg
-    class Pool:
+    class Pool(Config):
         size: int = 1
 
-    @cfg
-    class Top:
+    class Top(Config):
         pool: Pool = field(default_factory = Pool)
         pools: dict[str, Pool] = field(default_factory = dict)
         max_size: int = field(default = 1, key = "max-size")
 
     path = tmp_path / "pyproject.toml"
     path.write_text("[tool.x]\nmax-size = 3\n[tool.x.pools.a]\nsize = 2\n[tool.x.pools.b]\n")
-    top = load_cfg(path, Top, section = "tool.x")
+    top = Top.load(path, section = "tool.x")
     assert sources_of(top) == {"pool.size": "(default)", "pools.a.size": f"{path}:4", "pools.b.size": "(default)", "max-size": f"{path}:2"}
-    assert sources_of(from_dict(Top, {"pool": {}, "pools": {}})) == {"pool.size": "(default)", "pools": "<dict>", "max-size": "(default)"}
+    assert sources_of(Top.from_dict({"pool": {}, "pools": {}})) == {"pool.size": "(default)", "pools": "<dict>", "max-size": "(default)"}
 
 
 def test_sources_of_what_was_not_loaded_is_refused():
     with pytest.raises(ValueError, match = "this Db was not loaded"):
         sources_of(Db(host = "h"))
     for bad in (Db, 3, {"a": 1}):
-        with pytest.raises(TypeError, match = "sources_of takes an instance of a @cfg class"):
+        with pytest.raises(TypeError, match = "sources_of takes a configuration"):
             sources_of(bad)
 
 
 def test_what_is_kept_for_sources_of_changes_nothing_else(tmp_path):
     import pickle
 
-    loaded = from_dict(Db, {"host": "h"})
+    loaded = Db.from_dict({"host": "h"})
     assert loaded == Db(host = "h") and repr(loaded) == repr(Db(host = "h")) and hash(loaded) == hash(Db(host = "h"))
     again = pickle.loads(pickle.dumps(loaded))
     assert again == loaded and sources_of(again) == sources_of(loaded) == {"host": "<dict>", "port": "(default)", "password": "(default)"}

@@ -7,7 +7,7 @@ import tomllib
 
 import pytest
 
-from cfgcast import cfg
+from cfgcast import Config
 from cfgcast._readers import CONFIG_READERS, read_ini, read_json, read_toml, read_yaml
 
 CFGS = Path(__file__).parent.parent / "cfgs"
@@ -78,12 +78,10 @@ def test_a_section_that_clashes_with_a_key_is_refused(tmp_path):
 
 
 def test_lists_are_split_only_where_the_schema_says_list(tmp_path):
-    @cfg
-    class Pool:
+    class Pool(Config):
         hosts: list[str]
 
-    @cfg
-    class App:
+    class App(Config):
         tags: list[str]
         ports: list[int] = field(default_factory = list)
         empty: list[str] = field(default_factory = list)
@@ -146,17 +144,14 @@ def test_every_format_has_a_reader():
 
 
 def test_ini_and_sections_in_lists_and_dictionaries(tmp_path):
-    @cfg
-    class Region:
+    class Region(Config):
         hosts: list[str]
 
-    @cfg
-    class App:
+    class App(Config):
         regions: dict[str, Region] = field(default_factory = dict)
         servers: list[Region] = field(default_factory = list)
 
-    @cfg
-    class Outer:
+    class Outer(Config):
         app: App
 
     #* A dictionary of sections is a dotted section per name, its lists split as anywhere.

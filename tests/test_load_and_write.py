@@ -1,4 +1,4 @@
-"""The public way in and out: `load_cfg`, `Config.load` / `from_dict`, `to_dict`, `write`, `infer_type`."""
+"""The public way in and out: `Config.load` / `from_dict`, `to_dict`, `write`, `infer_type`."""
 from dataclasses import field
 from pathlib import Path
 import json
@@ -7,21 +7,19 @@ import warnings
 import pytest
 
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, ConfigWarning, cfg, load_cfg, to_dict, write
+from cfgcast import Config, ConfigError, ConfigWarning, to_dict, write
 from cfgcast._base import SUFFIXES, infer_type
 
 CFGS = Path(__file__).parent.parent / "cfgs"
 
 
-@cfg
-class Db:
+class Db(Config):
     host: str
     port: Port = 5432
     password: SecretStr = SecretStr("pw")
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     hosts: list[str] = field(default_factory = list)
     db: Db
@@ -52,8 +50,7 @@ def test_suffixes_name_the_four_formats():
 
 # ── loading ─────────────────────────────────────────────────────────────────
 
-@cfg
-class Simple:
+class Simple(Config):
     name: str
     version: str
     debug: bool
@@ -65,39 +62,32 @@ class Simple:
 
 
 @pytest.mark.parametrize("suffix", ["json", "toml", "yaml", "ini", "cfg"])
-def test_load_cfg_and_the_load_member_read_every_format(suffix):
+def test_load_reads_every_format(suffix):
     if suffix == "yaml":
         pytest.importorskip("yaml")
-    loaded = load_cfg(CFGS / f"simple.{suffix}", Simple)
-    assert loaded == Simple.load(CFGS / f"simple.{suffix}") == Simple.load(str(CFGS / f"simple.{suffix}"))
+    loaded = Simple.load(CFGS / f"simple.{suffix}")
+    assert type(loaded) is Simple and loaded == Simple.load(str(CFGS / f"simple.{suffix}"))
     assert loaded.port == 8080 and loaded.debug is True and loaded.hosts == ["localhost", "shop.example.com"]
 
 
 def test_cfg_type_overrides_the_suffix_positionally_or_by_keyword(tmp_path):
     path = tmp_path / "settings.conf"
     path.write_text((CFGS / "simple.toml").read_text())
-    assert load_cfg(path, Simple, "toml") == load_cfg(path, Simple, cfg_type = "toml") == Simple.load(path, "toml")
+    assert Simple.load(path, "toml") == Simple.load(path, cfg_type = "toml")
     with pytest.raises(ValueError, match = "cfg_type"):
-        load_cfg(path, Simple)
+        Simple.load(path)
 
 
 def test_an_unknown_cfg_type_is_refused():
     with pytest.raises(ValueError, match = "Unsupported configuration type"):
-        load_cfg(CFGS / "simple.json", Simple, "xml")                # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("schema", [object, dict, 5, Simple(name = "x", version = "1", debug = True, port = 1, timeout = 1.0,
-                                                           workers = 1, log_level = "x", hosts = [])], ids = repr)
-def test_load_cfg_takes_a_configuration_class_only(schema):
-    with pytest.raises(TypeError, match = "not a @cfg class"):
-        load_cfg(CFGS / "simple.json", schema)
+        Simple.load(CFGS / "simple.json", "xml")                # type: ignore[arg-type]
 
 
 def test_errors_of_a_loaded_file_start_with_the_file(tmp_path):
     path = tmp_path / "app.json"
     path.write_text(json.dumps({"name": "x", "db": {"host": "h", "port": 0}, "typo": 1}))
     with pytest.raises(ConfigError) as info:
-        load_cfg(path, App)
+        App.load(path)
     assert {tuple(p["loc"][1:]) for p in info.value.errors()} == {("db", "port"), ("typo",)}
     assert all(p["loc"][0] == str(path) for p in info.value.errors())
     assert info.value.file == str(path)
@@ -105,7 +95,7 @@ def test_errors_of_a_loaded_file_start_with_the_file(tmp_path):
 
 def test_a_missing_file():
     with pytest.raises(FileNotFoundError):
-        load_cfg(CFGS / "nope.json", Simple)
+        Simple.load(CFGS / "nope.json")
 
 
 def test_from_dict_builds_and_checks():
@@ -133,9 +123,9 @@ def test_to_dict_keeps_secrets_masked_and_copies_containers():
 
 @pytest.mark.parametrize("wrong", [App, {"a": 1}, 5], ids = repr)
 def test_to_dict_and_write_take_an_instance_of_a_configuration(wrong, tmp_path):
-    with pytest.raises(TypeError, match = "instance of a @cfg class"):
+    with pytest.raises(TypeError, match = "takes a configuration"):
         to_dict(wrong)
-    with pytest.raises(TypeError, match = "instance of a @cfg class"):
+    with pytest.raises(TypeError, match = "takes a configuration"):
         write(wrong, tmp_path / "x.json")
 
 
@@ -146,7 +136,7 @@ def test_write_then_load_gives_the_same_configuration(tmp_path, suffix):
     if suffix == "yaml":
         pytest.importorskip("yaml")
     write(APP, tmp_path / f"out.{suffix}")
-    assert load_cfg(tmp_path / f"out.{suffix}", App) == APP
+    assert App.load(tmp_path / f"out.{suffix}") == APP
 
 
 def test_write_reveals_secrets_and_writes_every_key(tmp_path):
@@ -155,34 +145,10 @@ def test_write_reveals_secrets_and_writes_every_key(tmp_path):
     assert written["db"] == {"host": "h", "port": 5432, "password": "pw"}  # the default port is written too
 
 
-def test_overrides_go_to_the_file_only(tmp_path):
-    write(APP, tmp_path / "out.toml", {"db": {"port": "9090"}, "name": "variant"})
-    variant = load_cfg(tmp_path / "out.toml", App)
-    assert variant.db.port == 9090 and variant.name == "variant" and variant.db.host == "h"
-    assert APP.db.port == 5432 and APP.name == "shop"
-
-
-def test_overrides_are_written_as_converted(tmp_path):
-    write(APP, tmp_path / "out.json", {"db": {"port": "9090"}})
-    assert json.loads((tmp_path / "out.json").read_text())["db"]["port"] == 9090   # a number, not the text
-
-
-@pytest.mark.parametrize("overrides", [{"db": {"port": "abc"}}, {"nope": 1}, {"db": {"nope": 1}}, {"db": "flat"}], ids = str)
-def test_bad_overrides_are_refused_and_nothing_is_written(tmp_path, overrides):
-    with pytest.raises(ConfigError):
-        write(APP, tmp_path / "never.json", overrides)
-    assert not (tmp_path / "never.json").exists()
-
-
-def test_overrides_must_be_a_dictionary(tmp_path):
-    with pytest.raises(TypeError, match = "dictionary"):
-        write(APP, tmp_path / "x.json", [("name", "x")])           # type: ignore[arg-type]
-
-
 def test_write_with_cfg_type_positionally_or_by_keyword(tmp_path):
-    write(APP, tmp_path / "a.txt", None, "json")
+    write(APP, tmp_path / "a.txt", "json")
     write(APP, tmp_path / "b.txt", cfg_type = "toml")
-    assert load_cfg(tmp_path / "a.txt", App, "json") == load_cfg(tmp_path / "b.txt", App, "toml") == APP
+    assert App.load(tmp_path / "a.txt", "json") == App.load(tmp_path / "b.txt", "toml") == APP
     with pytest.raises(ValueError, match = "cfg_type"):
         write(APP, tmp_path / "c.txt")
     with pytest.raises(ValueError, match = "Unsupported"):
@@ -195,18 +161,16 @@ def test_what_ini_cannot_hold_is_refused_before_writing(tmp_path):
         write(odd, tmp_path / "x.ini")
     assert not (tmp_path / "x.ini").exists()
     write(odd, tmp_path / "x.json")                                 # JSON can
-    assert load_cfg(tmp_path / "x.json", App).name == "line\nbreak"
+    assert App.load(tmp_path / "x.json").name == "line\nbreak"
 
 
 # ── unknown keys under strict = False ───────────────────────────────────────
 
-@cfg
-class PlainSection:
+class PlainSection(Config):
     host: str
 
 
-@cfg(strict = False)
-class Lenient:
+class Lenient(Config, strict = False):
     name: str
     db: PlainSection
 
@@ -218,8 +182,7 @@ def test_every_way_in_warns_and_points_at_the_line_that_called_it(tmp_path):
     file = tmp_path / "new.json"
     file.write_text(json.dumps(NEWER))
     #* A file's keys have their line (the whole of this one is on line 1), a dictionary's have none.
-    for read, at in ((lambda: load_cfg(file, Lenient), f"{file}:1: "), (lambda: Lenient.load(file), f"{file}:1: "),
-                     (lambda: Lenient.from_dict(NEWER), "")):
+    for read, at in ((lambda: Lenient.load(file), f"{file}:1: "), (lambda: Lenient.from_dict(NEWER), "")):
         with warnings.catch_warnings(record = True) as caught:
             warnings.simplefilter("always")
             assert read().db.host == "h"
@@ -230,19 +193,14 @@ def test_every_way_in_warns_and_points_at_the_line_that_called_it(tmp_path):
         assert "hunter2" not in str(caught[0].message)
 
 
-def test_every_way_in_can_leave_the_warning_out(tmp_path):
+def test_every_way_in_leaves_the_warning_out_under_a_warnings_filter(tmp_path):
     file = tmp_path / "new.json"
     file.write_text(json.dumps(NEWER))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        load_cfg(file, Lenient, show_warnings = False)
-        Lenient.load(file, show_warnings = False)
-        Lenient.from_dict(NEWER, show_warnings = False)
-
-
-def test_show_warnings_is_keyword_only(tmp_path):
-    with pytest.raises(TypeError):
-        load_cfg(tmp_path / "new.json", Lenient, "json", False)
+        warnings.filterwarnings("ignore", category = ConfigWarning)
+        Lenient.load(file)
+        Lenient.from_dict(NEWER)
 
 
 def test_the_warning_can_be_made_an_error(tmp_path):
@@ -251,15 +209,7 @@ def test_the_warning_can_be_made_an_error(tmp_path):
     with warnings.catch_warnings():
         warnings.filterwarnings("error", category = ConfigWarning)
         with pytest.raises(ConfigWarning):
-            load_cfg(file, Lenient)
-
-
-def test_an_override_that_is_ignored_warns_and_is_not_written(tmp_path):
-    file = tmp_path / "out.json"
-    loose = Lenient(name = "shop", db = PlainSection(host = "h"))
-    with pytest.warns(ConfigWarning, match = "db.prot"):
-        write(loose, file, {"db": {"prot": 5}})
-    assert json.loads(file.read_text()) == {"name": "shop", "db": {"host": "h"}}
+            Lenient.load(file)
 
 
 def test_the_ini_file_that_found_this_loads_with_a_warning():
@@ -280,8 +230,7 @@ def _ini_schema() -> type:
 # ── found by review ─────────────────────────────────────────────────────────
 
 def test_a_field_the_class_works_out_is_no_key(tmp_path):
-    @cfg
-    class Derived:
+    class Derived(Config):
         name: str
         shout: str = field(init = False, default = "")
 
@@ -290,17 +239,16 @@ def test_a_field_the_class_works_out_is_no_key(tmp_path):
 
     made = Derived(name = "shop")
     assert made.shout == "SHOP" and to_dict(made) == {"name": "shop"}
-    write(made, tmp_path / "d.toml", {"name": "other"})
-    assert load_cfg(tmp_path / "d.toml", Derived).shout == "OTHER"
+    write(Derived(name = "other"), tmp_path / "d.toml")
+    assert Derived.load(tmp_path / "d.toml").shout == "OTHER"
 
 
 def test_keys_that_were_converted_are_written_and_load_again(tmp_path):
-    @cfg
-    class Limits:
+    class Limits(Config):
         by_port: dict[int, str]
 
     limits = Limits.from_dict({"by_port": {"80": "web", "5432": "db"}})
     assert limits.by_port == {80: "web", 5432: "db"}
     for suffix in ("json", "toml", "ini"):
         write(limits, tmp_path / f"l.{suffix}")
-        assert load_cfg(tmp_path / f"l.{suffix}", Limits) == limits
+        assert Limits.load(tmp_path / f"l.{suffix}") == limits

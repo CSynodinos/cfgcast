@@ -6,7 +6,7 @@ import re
 import pytest
 
 from enforced.data_types import SecretStr
-from cfgcast import ConfigError, cfg, field, load_cfg, write_template
+from cfgcast import Config, ConfigError, field, write_template
 from cfgcast._template import template_text
 
 FORMATS = ["toml", "yaml", "ini"]
@@ -17,14 +17,12 @@ class Level(Enum):
     HIGH = "high"
 
 
-@cfg
-class Pool:
+class Pool(Config):
     size: int = field(default = 5, doc = "connections kept open")
     timeout: float | None = None
 
 
-@cfg(keys = "kebab-case")
-class Database:
+class Database(Config, keys = "kebab-case"):
     host: str = field(doc = "where the database is\nname or address")
     port: int = 5432
     password: SecretStr = SecretStr("hunter2")
@@ -32,14 +30,12 @@ class Database:
     read_only: bool = False
 
 
-@cfg
-class Server:
+class Server(Config):
     host: str
     tags: list[str] = field(default_factory = list)
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     mode: Literal["dev", "prod"] = "dev"
     level: Level = Level.LOW
@@ -50,20 +46,17 @@ class App:
     named: dict[str, Server] = field(default_factory = dict)
 
 
-@cfg
-class Fleet:
+class Fleet(Config):
     servers: list[Server] = field(default_factory = list)
 
 
-@cfg
-class Defaults:
+class Defaults(Config):
     name: str = "app"
     pool: Pool = field(default_factory = lambda: Pool(size = 9))
     token: SecretStr = SecretStr("s3cret-token")
 
 
-@cfg
-class Node:
+class Node(Config):
     name: str = "n"
     children: list["Node"] = field(default_factory = list)
 
@@ -86,7 +79,7 @@ def test_a_template_without_required_keys_loads_and_gives_the_defaults(tmp_path,
     _needs(suffix)
     file = tmp_path / f"app.{suffix}"
     write_template(Defaults, file)
-    assert load_cfg(file, Defaults) == Defaults()
+    assert Defaults.load(file) == Defaults()
 
 
 @pytest.mark.parametrize("suffix", FORMATS)
@@ -95,7 +88,7 @@ def test_the_required_keys_are_what_a_template_misses(tmp_path, suffix):
     file = tmp_path / f"app.{suffix}"
     write_template(App, file)
     with pytest.raises(ConfigError) as caught:
-        load_cfg(file, App)
+        App.load(file)
     assert sorted((e["type"], tuple(e["loc"][1:])) for e in caught.value.errors()) == [("missing", ("db", "host")), ("missing", ("name",))]
 
 
@@ -105,7 +98,7 @@ def test_a_template_with_its_required_keys_filled_in_gives_the_defaults(tmp_path
     file = tmp_path / f"app.{suffix}"
     write_template(App, file)
     file.write_text(_uncommented(file.read_text(), "name", "host"))
-    assert load_cfg(file, App) == App(name = "", db = Database(host = ""))
+    assert App.load(file) == App(name = "", db = Database(host = ""))
 
 
 @pytest.mark.parametrize("suffix", FORMATS)
@@ -156,10 +149,10 @@ def test_the_example_of_a_list_of_sections_can_be_copied(tmp_path, suffix):
     _needs(suffix)
     file = tmp_path / f"fleet.{suffix}"
     write_template(Fleet, file)
-    assert load_cfg(file, Fleet) == Fleet()
+    assert Fleet.load(file) == Fleet()
     header = ["servers", "-"] if suffix == "yaml" else ["[[servers]]"]
     file.write_text(_uncommented(file.read_text(), *header, "host", "tags"))
-    assert load_cfg(file, Fleet) == Fleet(servers = [Server(host = "")])
+    assert Fleet.load(file) == Fleet(servers = [Server(host = "")])
 
 
 @pytest.mark.parametrize("suffix", FORMATS)
@@ -171,36 +164,33 @@ def test_the_example_of_a_dictionary_of_sections_can_be_copied(tmp_path, suffix)
     text = file.read_text()
     start = text.index("# one of these for each entry")
     file.write_text(_uncommented(text[:start], "name", "host") + _uncommented(text[start:], *header, "host", "tags"))
-    assert load_cfg(file, App).named == {"name": Server(host = "")}
+    assert App.load(file).named == {"name": Server(host = "")}
 
 
 def test_ini_says_that_it_cant_hold_a_list_of_sections(tmp_path):
     file = tmp_path / "fleet.ini"
     write_template(Fleet, file)
     assert "# servers: ini can't hold a list of sections (use TOML or YAML)" in file.read_text()
-    assert load_cfg(file, Fleet) == Fleet()
+    assert Fleet.load(file) == Fleet()
 
 
 def test_a_default_that_ini_cant_hold_is_left_to_the_default(tmp_path):
-    @cfg
-    class Hosts:
+    class Hosts(Config):
         hosts: list[str] = field(default_factory = lambda: ["a,b", "c"])
 
     file = tmp_path / "hosts.ini"
     write_template(Hosts, file)
     assert "ini can't hold the default of this key" in file.read_text()
-    assert load_cfg(file, Hosts) == Hosts()
+    assert Hosts.load(file) == Hosts()
 
 
 def test_a_yaml_section_with_nothing_to_read_yet_is_not_null(tmp_path):
     pytest.importorskip("yaml")
 
-    @cfg
-    class Login:
+    class Login(Config):
         token: SecretStr = SecretStr("")
 
-    @cfg
-    class Both:
+    class Both(Config):
         given: Login = field(default_factory = Login)
         asked: Login
 
@@ -209,28 +199,26 @@ def test_a_yaml_section_with_nothing_to_read_yet_is_not_null(tmp_path):
     text = file.read_text()
     assert "\n#given:\n" in text                                   # it has a default: left out is the same
     assert "# remove the {} when a key below is filled in\nasked: {}\n" in text
-    assert load_cfg(file, Both) == Both(asked = Login())
+    assert Both.load(file) == Both(asked = Login())
 
 
 def test_a_yaml_section_of_required_keys_is_commented_out_whole_and_put_back_with_them(tmp_path):
     pytest.importorskip("yaml")
 
-    @cfg
-    class Login:
+    class Login(Config):
         host: str
 
-    @cfg
-    class Holder:
+    class Holder(Config):
         server: Login
 
     file = tmp_path / "holder.yaml"
     write_template(Holder, file)
-    assert "# required\n#server:\n\n  # required: str\n  #host: \"\"\n" in file.read_text()
+    assert "# required\n#server:\n\n  # required: str\n  #host: ''\n" in file.read_text()
     with pytest.raises(ConfigError) as caught:
-        load_cfg(file, Holder)
+        Holder.load(file)
     assert [tuple(e["loc"][1:]) for e in caught.value.errors()] == [("server",)]
     file.write_text(_uncommented(file.read_text(), "server", "host"))
-    assert load_cfg(file, Holder) == Holder(server = Login(host = ""))
+    assert Holder.load(file) == Holder(server = Login(host = ""))
 
 
 def test_a_schema_that_holds_itself_ends():
@@ -240,8 +228,7 @@ def test_a_schema_that_holds_itself_ends():
 
 
 def test_a_default_no_file_can_hold_is_commented_out():
-    @cfg
-    class Odd:
+    class Odd(Config):
         thing: Any = field(default_factory = object)
 
     assert "#thing = " in template_text(Odd, "toml")
@@ -273,8 +260,8 @@ def test_the_format_can_be_named(tmp_path):
 
 
 @pytest.mark.parametrize("bad", [App(name = "a", db = Database(host = "h")), dict, "App", None])
-def test_only_a_cfg_class_has_a_template(tmp_path, bad):
-    with pytest.raises(TypeError, match = "write_template takes a @cfg class"):
+def test_only_a_configuration_class_has_a_template(tmp_path, bad):
+    with pytest.raises(TypeError, match = "write_template takes a configuration class"):
         write_template(bad, tmp_path / "app.toml")
 
 

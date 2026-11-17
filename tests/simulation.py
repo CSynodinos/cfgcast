@@ -8,11 +8,10 @@ Each check is reported on its own (a failing one doesn't stop the others), a for
 needs a package that isn't installed (PyYAML) is skipped, and the exit status is 1 if any failed.
 """
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Literal
-from cfgcast import ConfigError, cfg, field, load_cfg, sources_of, to_dict, write, write_template
+from cfgcast import Config, ConfigError, FrozenConfigError, field, sources_of, to_dict, write, write_template
 import sys
 sys.path.append(
     str(Path(__file__).parent.parent.parent)
@@ -34,8 +33,7 @@ COMPLEX_CFG_PATH = COMPLEX_PATHS["json"]
 
 
 # Classes for each test format
-@cfg
-class SimpleCfg:
+class SimpleCfg(Config):
     name: str
     version: str
     debug: bool
@@ -46,22 +44,19 @@ class SimpleCfg:
     hosts: list[str]
 
 
-@cfg
-class Pool:
+class Pool(Config):
     min_size: int
     max_size: int
     timeout: float
 
 
-@cfg
-class Replica:
+class Replica(Config):
     host: str
     port: Port
     read_only: bool
 
 
-@cfg
-class Database:
+class Database(Config):
     host: str
     port: Port
     name: str
@@ -71,23 +66,20 @@ class Database:
     replica: Replica
 
 
-@cfg
-class Cache:
+class Cache(Config):
     backend: str
     ttl: float
     max_items: int
     namespaces: list[str]
 
 
-@cfg
-class Tls:
+class Tls(Config):
     enabled: bool
     cert_path: str
     key_path: str
 
 
-@cfg
-class Server:
+class Server(Config):
     host: str
     port: Port
     workers: int
@@ -95,22 +87,19 @@ class Server:
     tls: Tls
 
 
-@cfg
-class Rotation:
+class Rotation(Config):
     max_mb: int
     backups: int
 
 
-@cfg
-class Logging:
+class Logging(Config):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
     format: str
     handlers: list[str]
     rotation: Rotation
 
 
-@cfg
-class Features:
+class Features(Config):
     new_checkout: bool
     wishlist: bool
     rollout: Probability
@@ -118,15 +107,13 @@ class Features:
     weights: list[Probability]
 
 
-@cfg
-class Monitoring:
+class Monitoring(Config):
     metrics_url: Url
     sample_rate: Probability
     tags: list[str]
 
 
-@cfg
-class ComplexCfg:
+class ComplexCfg(Config):
     name: str
     environment: str
     debug: bool
@@ -144,32 +131,27 @@ class ComplexCfg:
     monitoring: Monitoring
 
 
-@cfg(strict = False)                                         # a program reading a newer file: extra keys are ignored
-class Lenient:
+class Lenient(Config, strict = False):
     name: str
     port: int
 
 
-@cfg(strict = False)                                         # the code's default is used where the file has no key
-class WithDefault:
+class WithDefault(Config, strict = False):
     name: str
     retries: int = 3
 
 
-@cfg
-class Fleet:
+class Fleet(Config):
     name: str
     servers: list[Server]                                    # a list of sections, each with a section: TOML's [[servers]]
 
 
-@cfg
-class Region:
+class Region(Config):
     host: str
     weight: Probability
 
 
-@cfg
-class Schedule:
+class Schedule(Config):
     name: str
     starts: date
     built_at: datetime
@@ -177,37 +159,32 @@ class Schedule:
     regions: dict[str, Region]                               # sections by name
 
 
-@cfg
-class LayeredPool:
+class LayeredPool(Config):
     min_size: int
     max_size: int
 
 
-@cfg
-class LayeredDb:
+class LayeredDb(Config):
     host: str
     port: Port
     user: str
     pool: LayeredPool
 
 
-@cfg
-class Layered:
+class Layered(Config):
     name: str
     debug: bool
     hosts: list[str]
     db: LayeredDb
 
 
-@cfg(keys = "kebab-case")                                    # max_size is the key max-size
-class RateLimit:
+class RateLimit(Config, keys = "kebab-case"):
     max_size: int
     per_user: bool
     retry_after: list[int]
 
 
-@cfg
-class Keys:
+class Keys(Config):
     name: str
     class_: str = field(key = "class")                       # a reserved word
     request_id: str = field(key = "X-Request-Id")
@@ -253,7 +230,7 @@ def baseline[T](path: Path, schema: type[T]) -> T:
     """The object the other checks compare with. If it can't even be loaded, say so and carry on:
     every check that needs it then fails on its own."""
     try:
-        return load_cfg(path, schema)
+        return schema.load(path)
     except Exception:
         RESULTS.append(("FAIL", f"baseline: load {path.name}", traceback.format_exc(limit = -3).strip()))
         return None                                                      # type: ignore[return-value]
@@ -267,13 +244,13 @@ def main() -> int:
     for fmt in FORMATS:
         @check(f"load simple.{fmt}")
         def _simple(fmt = fmt) -> None:
-            loaded = load_cfg(SIMPLE_PATHS[fmt], SimpleCfg)
+            loaded = SimpleCfg.load(SIMPLE_PATHS[fmt])
             assert type(loaded) is SimpleCfg
             assert loaded == simple_cfg, f"differs from simple.json: {loaded}"
 
         @check(f"load complex.{fmt}")
         def complex_worker(fmt = fmt) -> None:
-            loaded = load_cfg(COMPLEX_PATHS[fmt], ComplexCfg)
+            loaded = ComplexCfg.load(COMPLEX_PATHS[fmt])
             assert type(loaded) is ComplexCfg
             assert loaded == complex_cfg, f"differs from complex.json: {loaded}"
 
@@ -307,23 +284,25 @@ def main() -> int:
 
     @check("complex: the YAML 1.1 booleans trap (fallback_locale: no)")
     def _() -> None:
-        loaded = load_cfg(COMPLEX_PATHS["yaml"], ComplexCfg)
+        loaded = ComplexCfg.load(COMPLEX_PATHS["yaml"])
         assert loaded.fallback_locale == "no", repr(loaded.fallback_locale)
         assert loaded.support_phone == "+4915112345678"
 
     @check("ini: lists, dotted sections and [DEFAULT]")
     def _() -> None:
-        loaded = load_cfg(COMPLEX_PATHS["ini"], ComplexCfg)
+        loaded = ComplexCfg.load(COMPLEX_PATHS["ini"])
         assert loaded.allowed_hosts == ["shop.example.com", "admin.example.com", "localhost"]
         assert loaded.db.pool.timeout == 30.5 and loaded.logging.format == "{asctime} {levelname} {message}"
         assert loaded.name == "storefront"                     # a [DEFAULT] key is the top-level one
 
-    @check("a loaded configuration is frozen")
+    @check("a loaded configuration is frozen: a FrozenConfigError names the key, not the value")
     def _() -> None:
         assert isinstance(simple_cfg, SimpleCfg)
         try:
-            simple_cfg.port = 1                                # type: ignore[misc]
-        except (FrozenInstanceError, AttributeError):
+            complex_cfg.db.password = "leaked-text"            # type: ignore[assignment, misc]
+        except FrozenConfigError as error:
+            assert str(error).startswith("Database is frozen: db.password can't be assigned"), str(error)
+            assert "leaked-text" not in str(error)
             return
         raise AssertionError("assignment was allowed")
 
@@ -331,7 +310,7 @@ def main() -> int:
     @check("cfg_type given explicitly, for every format")
     def _() -> None:
         for fmt, wanted in (("json", "json"), ("toml", "toml"), ("yaml", "yaml"), ("ini", "ini"), ("cfg", "ini")):
-            loaded = load_cfg(SIMPLE_PATHS[fmt], SimpleCfg, wanted)
+            loaded = SimpleCfg.load(SIMPLE_PATHS[fmt], wanted)
             assert type(loaded) is SimpleCfg and loaded == simple_cfg, fmt
 
     @check("an unknown suffix needs cfg_type, and then loads")
@@ -340,22 +319,22 @@ def main() -> int:
             odd = Path(folder) / "settings.conf"
             odd.write_text(SIMPLE_PATHS["toml"].read_text())
             try:
-                load_cfg(odd, SimpleCfg)
+                SimpleCfg.load(odd)
             except ValueError as error:
                 assert "cfg_type" in str(error), error
             else:
                 raise AssertionError("an unknown suffix was accepted")
-            assert load_cfg(odd, SimpleCfg, "toml") == simple_cfg
+            assert SimpleCfg.load(odd, "toml") == simple_cfg
 
     @check("a wrong cfg_type is refused at the call")
     def _() -> None:
         try:
-            load_cfg(SIMPLE_CFG_PATH, SimpleCfg, "xml")        # type: ignore[call-overload]
+            SimpleCfg.load(SIMPLE_CFG_PATH, "xml")        # type: ignore[call-overload]
         except Exception:
             return
         raise AssertionError("xml was accepted")
 
-    @check("the load method and load_cfg agree")
+    @check("load gives the class it is called on")
     def _() -> None:
         simple, complex_ = SimpleCfg.load(SIMPLE_PATHS["toml"]), ComplexCfg.load(COMPLEX_PATHS["json"], cfg_type = "json")
         assert type(simple) is SimpleCfg and simple == simple_cfg
@@ -368,7 +347,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "broken.json"
             path.write_text(json.dumps(data))
-            return raised(lambda: load_cfg(path, ComplexCfg))
+            return raised(lambda: ComplexCfg.load(path))
 
     @check("strict (the default): an unknown key is refused, with its path")
     def _() -> None:
@@ -417,22 +396,21 @@ def main() -> int:
 
     @check("strict = False ignores keys it doesn't know")
     def _() -> None:
-        assert load_cfg(SIMPLE_CFG_PATH, Lenient) == Lenient(name = "storefront", port = 8080)
+        assert Lenient.load(SIMPLE_CFG_PATH) == Lenient(name = "storefront", port = 8080)
 
-    @check("a @cfg class is not inherited")
+    @check("a class below a configuration is one too: the fields above, and its own")
     def _() -> None:
-        try:
-            @cfg
-            class Below(SimpleCfg):                             # type: ignore[misc]
-                extra: int = 1
-        except TypeError:
-            return
-        raise AssertionError("a class below a configuration was accepted")
+        class Below(SimpleCfg):
+            extra: int = 1
 
-    @check("a @cfg class is a plain enforced dataclass")
+        below = Below.load(SIMPLE_CFG_PATH)
+        assert type(below) is Below and below.extra == 1 and below.port == simple_cfg.port
+        assert isinstance(below, SimpleCfg) and to_dict(below) == {**to_dict(simple_cfg), "extra": 1}
+
+    @check("a configuration is a plain enforced dataclass below Config")
     def _() -> None:
         import dataclasses
-        assert dataclasses.is_dataclass(SimpleCfg) and SimpleCfg.__bases__ == (object,)
+        assert dataclasses.is_dataclass(SimpleCfg) and SimpleCfg.__bases__ == (Config,)
         try:
             SimpleCfg(name = "x", version = "1", debug = True, port = "not a port", timeout = 1.0, workers = 1,
                       log_level = "INFO", hosts = [])
@@ -442,16 +420,16 @@ def main() -> int:
 
     @check("a code default is used when the file has no key; the file wins when it has")
     def _() -> None:
-        assert load_cfg(SIMPLE_CFG_PATH, WithDefault).retries == 3
+        assert WithDefault.load(SIMPLE_CFG_PATH).retries == 3
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "retries.toml"
             path.write_text('name = "x"\nretries = 9\n')
-            assert load_cfg(path, WithDefault).retries == 9
+            assert WithDefault.load(path).retries == 9
 
     @check("a missing file is the usual FileNotFoundError")
     def _() -> None:
         try:
-            load_cfg(CFGS / "nope.json", SimpleCfg)
+            SimpleCfg.load(CFGS / "nope.json")
         except FileNotFoundError:
             return
         raise AssertionError("no FileNotFoundError")
@@ -471,14 +449,14 @@ def main() -> int:
                 path = Path(folder) / f"out.{fmt}"
                 write(complex_cfg, path)
                 assert path.exists()
-                assert load_cfg(path, ComplexCfg) == complex_cfg
+                assert ComplexCfg.load(path) == complex_cfg
 
     @check("write to a format other than the one it was loaded from")
     def _() -> None:
         with tempfile.TemporaryDirectory() as folder:
             as_ini = Path(folder) / "converted.ini"
-            write(load_cfg(COMPLEX_PATHS["yaml"], ComplexCfg), as_ini)
-            assert load_cfg(as_ini, ComplexCfg) == complex_cfg
+            write(ComplexCfg.load(COMPLEX_PATHS["yaml"]), as_ini)
+            assert ComplexCfg.load(as_ini) == complex_cfg
 
     @check("write with cfg_type for a suffix it doesn't know")
     def _() -> None:
@@ -486,7 +464,7 @@ def main() -> int:
             path = Path(folder) / "out.txt"
             write(simple_cfg, path, cfg_type = "json")
             assert json.loads(path.read_text())["port"] == 8080
-            assert load_cfg(path, SimpleCfg, "json") == simple_cfg
+            assert SimpleCfg.load(path, "json") == simple_cfg
 
     @check("a SecretStr is written as its real text")
     def _() -> None:
@@ -496,31 +474,31 @@ def main() -> int:
             written = path.read_text()
             assert "k3y-9f2c71ab-do-not-print" in written and "**" not in written
 
-    @check("overrides apply to the file only, never to the object")
+    @check("overrides of a load are written as loaded, and the file loaded from is as it was")
     def _() -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "variant.toml"
-            write(complex_cfg, path, {"server": {"port": 9090}, "debug": True})
-            variant = load_cfg(path, ComplexCfg)
-            assert variant.server.port == 9090 and variant.debug is True
-            assert variant.server.workers == complex_cfg.server.workers          # the rest is untouched
-        assert complex_cfg.server.port == 8080 and complex_cfg.debug is False    # the object is as it was
+            variant = ComplexCfg.load(COMPLEX_PATHS["json"], overrides = {"server": {"port": "9090"}, "debug": True})
+            write(variant, path)
+            again = ComplexCfg.load(path)
+            assert again == variant and again.server.port == 9090 and again.debug is True
+            assert again.server.workers == complex_cfg.server.workers            # the rest is untouched
+        assert ComplexCfg.load(COMPLEX_PATHS["json"]) == complex_cfg
 
-    @check("overrides are checked: a wrong value or an unknown key is refused, and nothing is written")
+    @check("overrides are checked: a wrong value or an unknown key is refused")
     def _() -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            for overrides in ({"server": {"port": "abc"}}, {"nope": 1}, {"db": {"pool": {"max_size": "many"}}}):
-                path = Path(folder) / "never.json"
-                raised(lambda overrides = overrides: write(complex_cfg, path, overrides))
-                assert not path.exists(), overrides
+        for overrides in ({"server": {"port": "abc"}}, {"nope": 1}, {"db": {"pool": {"max_size": "many"}}}):
+            error = raised(lambda overrides = overrides: ComplexCfg.load(COMPLEX_PATHS["json"], overrides = overrides))
+            assert all(loc[0] == "overrides" for loc in problem_locs(error)), overrides
 
     @check("one configuration, several variants for a workflow")
     def _() -> None:
+        import dataclasses
         with tempfile.TemporaryDirectory() as folder:
             for run, workers in enumerate((1, 2, 8)):
                 path = Path(folder) / f"run_{run}.yaml"
-                write(complex_cfg, path, {"server": {"workers": workers}})
-                assert load_cfg(path, ComplexCfg).server.workers == workers
+                write(dataclasses.replace(complex_cfg, server = dataclasses.replace(complex_cfg.server, workers = workers)), path)
+                assert ComplexCfg.load(path).server.workers == workers
             assert complex_cfg.server.workers == 4
 
     # 7. lists and dictionaries of sections ------------------------------------------------------
@@ -530,7 +508,7 @@ def main() -> int:
     for fmt in ("json", "toml", "yaml"):
         @check(f"load fleet.{fmt}: a list of sections")
         def _(fmt = fmt) -> None:
-            loaded = load_cfg(CFGS / f"fleet.{fmt}", Fleet)
+            loaded = Fleet.load(CFGS / f"fleet.{fmt}")
             assert loaded == fleet and [type(server) for server in loaded.servers] == [Server] * 3
             assert loaded.servers[2].port == 5432 and type(loaded.servers[2].port) is Port
             assert [type(server.tls) for server in loaded.servers] == [Tls] * 3
@@ -542,7 +520,7 @@ def main() -> int:
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / f"fleet.{fmt}"
                 write(fleet, path)
-                assert load_cfg(path, Fleet) == fleet
+                assert Fleet.load(path) == fleet
 
     @check("a problem inside a list of sections has the item's index in its path")
     def _() -> None:
@@ -559,7 +537,7 @@ def main() -> int:
     def _() -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "fleet.ini"
-            for attempt in (lambda: write(fleet, path), lambda: load_cfg(path, Fleet)):
+            for attempt in (lambda: write(fleet, path), lambda: Fleet.load(path)):
                 path.write_text("[DEFAULT]\nname = fleet\nservers = web-1, web-2\n")
                 try:
                     attempt()
@@ -572,7 +550,7 @@ def main() -> int:
     for fmt in FORMATS:
         @check(f"load schedule.{fmt}: dates, times and sections by name")
         def _(fmt = fmt) -> None:
-            loaded = load_cfg(CFGS / f"schedule.{fmt}", Schedule)
+            loaded = Schedule.load(CFGS / f"schedule.{fmt}")
             assert loaded == schedule, f"differs from schedule.json: {loaded}"
             assert loaded.starts == date(2026, 10, 17) and type(loaded.starts) is date
             assert loaded.built_at == datetime(2026, 10, 17, 12, 30, tzinfo = timezone.utc)
@@ -584,7 +562,7 @@ def main() -> int:
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / f"schedule.{fmt}"
                 write(schedule, path)
-                assert load_cfg(path, Schedule) == schedule
+                assert Schedule.load(path) == schedule
 
     @check("TOML and YAML get dates as their own literals, not as text")
     def _() -> None:
@@ -594,17 +572,17 @@ def main() -> int:
             assert "starts = 2026-10-17\n" in (Path(folder) / "s.toml").read_text()
             assert "daily_at = 02:15:00\n" in (Path(folder) / "s.toml").read_text()
             assert "starts: 2026-10-17\n" in (Path(folder) / "s.yaml").read_text()
-            assert 'daily_at: "02:15:00"\n' in (Path(folder) / "s.yaml").read_text()   # bare, YAML 1.1 reads a number
+            assert "daily_at: '02:15:00'\n" in (Path(folder) / "s.yaml").read_text()   # bare, YAML 1.1 reads a number
 
     # 9. several files in layers -----------------------------------------------------------------
     @check("layers: sections merge key by key, a later file wins, a list is replaced")
     def _() -> None:
-        loaded = load_cfg(LAYERS, Layered)
+        loaded = Layered.load(LAYERS)
         assert loaded.name == "storefront" and loaded.debug is False
         assert loaded.hosts == ["shop.example.com", "admin.example.com"]
         assert loaded.db.host == "db.internal" and loaded.db.port == 5432 and loaded.db.user == "ana"
         assert loaded.db.pool == LayeredPool(min_size = 1, max_size = 50)
-        assert Layered.load(LAYERS) == loaded and load_cfg(LAYERS[:1], Layered).db.user == "dev"
+        assert Layered.load(LAYERS) == loaded and Layered.load(LAYERS[:1]).db.user == "dev"
 
     @check("layers: a problem names the file its value came from")
     def _() -> None:
@@ -613,7 +591,7 @@ def main() -> int:
             bad.write_text(json.dumps({"db": {"port": 0, "prot": 1}, "debug": None}))
             base_only = Path(folder) / "less.toml"
             base_only.write_text('name = "x"\nhosts = [1]\n')
-            error = raised(lambda: load_cfg([base_only, bad], Layered))
+            error = raised(lambda: Layered.load([base_only, bad]))
             found = {tuple(loc[1:]): Path(str(loc[0])).name for loc in problem_locs(error)}
             assert found == {("db", "prot"): "bad.json", ("db", "port"): "bad.json", ("debug",): "bad.json",
                              ("hosts", 0): "less.toml", ("db", "host"): "bad.json", ("db", "user"): "bad.json",
@@ -625,15 +603,15 @@ def main() -> int:
     def _() -> None:
         env = {"SHOP_DB__PORT": "9090", "SHOP_DEBUG": "yes", "shop_db__pool__max_size": "7", "SHOP_HOSTS": "a, b",
                "SHOP_UNKNOWN": "1", "SHOP_DB__NOPE": "1", "PATH": "/bin", "OTHER_NAME": "x"}
-        loaded = load_cfg(LAYERS, Layered, env_prefix = "SHOP_", env = env)
+        loaded = Layered.load(LAYERS, env_prefix = "SHOP_", env = env)
         assert loaded.db.port == 9090 and loaded.debug is True and loaded.db.pool.max_size == 7
         assert loaded.hosts == ["a", "b"] and loaded.name == "storefront" and loaded.db.user == "ana"
-        assert load_cfg(LAYERS, Layered, env_prefix = "SHOP_", env = {"SHOP_HOSTS": '["x,y", "z"]'}).hosts == ["x,y", "z"]
-        assert load_cfg(LAYERS, Layered, env = {}, env_prefix = "SHOP_") == load_cfg(LAYERS, Layered)
+        assert Layered.load(LAYERS, env_prefix = "SHOP_", env = {"SHOP_HOSTS": '["x,y", "z"]'}).hosts == ["x,y", "z"]
+        assert Layered.load(LAYERS, env = {}, env_prefix = "SHOP_") == Layered.load(LAYERS)
 
     @check("a problem of an environment variable names the variable")
     def _() -> None:
-        error = raised(lambda: load_cfg(LAYERS, Layered, env_prefix = "SHOP_", env = {"SHOP_DB__PORT": "0"}))
+        error = raised(lambda: Layered.load(LAYERS, env_prefix = "SHOP_", env = {"SHOP_DB__PORT": "0"}))
         assert problem_locs(error) == [["SHOP_DB__PORT", "db", "port"]], error.errors()
         assert "SHOP_DB__PORT: db.port: invalid 'Port'" in str(error), str(error)
 
@@ -643,7 +621,7 @@ def main() -> int:
     for fmt in FORMATS:
         @check(f"load keys.{fmt}: keys that are no Python names")
         def _(fmt = fmt) -> None:
-            loaded = load_cfg(CFGS / f"keys.{fmt}", Keys)
+            loaded = Keys.load(CFGS / f"keys.{fmt}")
             assert loaded == keys, f"differs from keys.json: {loaded}"
             assert loaded.class_ == "gold" and loaded.request_id == "trace"
             assert loaded.rate_limit == RateLimit(max_size = 10, per_user = True, retry_after = [1, 5, 30])
@@ -652,9 +630,9 @@ def main() -> int:
         def _(fmt = fmt) -> None:
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / f"keys.{fmt}"
-                write(keys, path, {"rate-limit": {"max-size": 20}})
+                write(Keys.from_dict({**to_dict(keys), "rate-limit": {**to_dict(keys)["rate-limit"], "max-size": 20}}), path)
                 assert "max-size" in path.read_text() and "max_size" not in path.read_text()
-                assert load_cfg(path, Keys).rate_limit.max_size == 20
+                assert Keys.load(path).rate_limit.max_size == 20
 
     @check("a problem and a variable use the file's key, and the field's name in a file is unknown")
     def _() -> None:
@@ -665,7 +643,7 @@ def main() -> int:
         error = raised(lambda: Keys.from_dict(data))
         assert sorted(loc[1:] for loc in problem_locs(error)) == [["class"], ["class_"], ["rate-limit", "max-size"]]
         assert "the key of this field is 'class'" in str(error), str(error)
-        loaded = load_cfg(CFGS / "keys.toml", Keys, env_prefix = "EDGE_",
+        loaded = Keys.load(CFGS / "keys.toml", env_prefix = "EDGE_",
                           env = {"EDGE_RATE_LIMIT__MAX_SIZE": "3", "EDGE_CLASS": "tin", "EDGE_X_REQUEST_ID": "r"})
         assert (loaded.rate_limit.max_size, loaded.class_, loaded.request_id) == (3, "tin", "r")
 
@@ -676,13 +654,13 @@ def main() -> int:
         @check(f"keys.{fmt}: the line of a value, in sources_of and in a problem")
         def _(fmt = fmt) -> None:
             path = CFGS / f"keys.{fmt}"
-            sources = sources_of(load_cfg(path, Keys))
+            sources = sources_of(Keys.load(path))
             assert sources["rate-limit.max-size"] == f"{path}:{lines[fmt]}", sources
-            assert sources_of(load_cfg(path, Keys, overrides = {"name": "cli"}))["name"] == "overrides"
+            assert sources_of(Keys.load(path, overrides = {"name": "cli"}))["name"] == "overrides"
             with tempfile.TemporaryDirectory() as folder:
                 wrong = Path(folder) / f"keys.{fmt}"
                 wrong.write_text(path.read_text().replace("10", '"many"', 1))
-                error = raised(lambda: load_cfg(wrong, Keys))
+                error = raised(lambda: Keys.load(wrong))
                 assert f"{wrong}:{lines[fmt]}: rate-limit.max-size" in str(error), str(error)
 
     # 13. a template of a schema ------------------------------------------------------------------
@@ -692,14 +670,14 @@ def main() -> int:
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / f"keys.{fmt}"
                 write_template(Keys, path)
-                error = raised(lambda: load_cfg(path, Keys))
+                error = raised(lambda: Keys.load(path))
                 assert {problem["type"] for problem in error.errors()} == {"missing"}, str(error)
                 #* YAML: a section with nothing under it would be null, so rate-limit is commented out whole (one problem, not three).
                 assert len(error.errors()) == (4 if fmt == "yaml" else 6), str(error)
                 #* Every key that is commented out is put back: it is '#key', and a note is '# note'.
                 text = re.sub(r"(?m)^(\s*)#(?! )", r"\1", path.read_text())
                 path.write_text(text)
-                loaded = load_cfg(path, Keys)
+                loaded = Keys.load(path)
                 assert loaded == Keys(name = "", class_ = "", request_id = "",
                                       rate_limit = RateLimit(max_size = 0, per_user = False, retry_after = [])), loaded
 

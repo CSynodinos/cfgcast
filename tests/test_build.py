@@ -9,19 +9,17 @@ import pytest
 from enforced import InvalidDataError
 import clitint._tint as tint                                   # the colour switches are clitint's state
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, cfg, to_dict
+from cfgcast import Config, ConfigError, to_dict
 from cfgcast._build import MASK, build, problems_of
 from cfgcast._errors import ConfigWarning
 
 
-@cfg
-class Pool:
+class Pool(Config):
     size: int = 2
     timeout: float = 1.0
 
 
-@cfg
-class Db:
+class Db(Config):
     host: str
     port: Port = 5432
     password: SecretStr
@@ -29,15 +27,13 @@ class Db:
     pool: Pool = field(default_factory = Pool)
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     db: Db
     cache: Db | None = None
 
 
-@cfg(strict = False)
-class Loose:
+class Loose(Config, strict = False):
     name: str
     db: Db
 
@@ -73,21 +69,18 @@ def test_an_optional_section_takes_none_or_a_section():
 def test_strict_false_ignores_unknown_keys_at_every_level():
     with pytest.warns(ConfigWarning) as caught:
         loose = build(Loose, {**GOOD, "extra": 1, "db": {**GOOD["db"], "typo": 1, "pool": {"size": 4, "deep": 1}}}, "f")
-    assert loose.name == "shop" and loose.db.pool.size == 4         # Db and Pool are plain @cfg: Loose decides for them
+    assert loose.name == "shop" and loose.db.pool.size == 4         # Db and Pool are strict: Loose decides for them
     assert [p["loc"] for p in caught[0].message.errors()] == [["f", "db", "pool", "deep"], ["f", "db", "typo"], ["f", "extra"]]
 
 
 def test_a_strict_class_above_a_lenient_section_refuses_only_its_own_keys():
-    @cfg(strict = False)
-    class Inner:
+    class Inner(Config, strict = False):
         a: int = 1
 
-    @cfg
-    class Middle:
+    class Middle(Config):
         inner: Inner
 
-    @cfg
-    class Outer:
+    class Outer(Config):
         middle: Middle
 
     with pytest.warns(ConfigWarning, match = "middle.inner.x"):
@@ -112,21 +105,17 @@ def test_ignored_keys_give_one_warning_with_paths_and_no_values():
     assert str(copy) == str(warning) and copy.errors() == warning.errors()
 
 
-def test_show_warnings_false_says_nothing():
+def test_the_warning_is_left_out_by_a_warnings_filter():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert build(Loose, {**GOOD, "extra": 1}, "f", show_warnings = False).name == "shop"
+        warnings.filterwarnings("ignore", category = ConfigWarning)
+        assert build(Loose, {**GOOD, "extra": 1}, "f").name == "shop"
 
 
 def test_nothing_ignored_is_no_warning():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         build(Loose, GOOD, "f")
-
-
-def test_show_warnings_is_true_or_false():
-    with pytest.raises(TypeError, match = "show_warnings"):
-        build(Loose, GOOD, "f", show_warnings = "no")
 
 
 def test_the_warning_comes_before_an_error_of_the_same_file():
@@ -195,8 +184,7 @@ def test_the_input_of_a_secret_field_is_masked_everywhere():
 
 
 def test_a_secret_inside_a_container_is_masked():
-    @cfg
-    class Keys:
+    class Keys(Config):
         keys: list[SecretStr]
 
     with pytest.raises(ConfigError) as info:
@@ -246,22 +234,20 @@ def test_the_warning_is_plain_as_text_and_coloured_on_a_terminal(monkeypatch):
     assert str(warning) == f"1 unknown key ignored in app.ini for Loose ({LOOSE_AT}):\n    -> db.typo"
     assert warning.shown() == ("\x1b[1m\x1b[31m1\x1b[0m unknown key ignored in \x1b[36mapp.ini\x1b[0m "
                                f"for \x1b[1m\x1b[33mLoose\x1b[0m (\x1b[36m{LOOSE_AT}\x1b[0m):\n    -> \x1b[1m\x1b[31mdb.typo\x1b[0m")
-    text = warnings.formatwarning(warning, ConfigWarning, "run.py", 142, "load_cfg()")
+    text = warnings.formatwarning(warning, ConfigWarning, "run.py", 142, "App.load()")
     assert text.startswith("\x1b[36mrun.py\x1b[0m:\x1b[1m\x1b[33m142\x1b[0m: \x1b[1m\x1b[38;2;255;165;0mConfigWarning\x1b[0m: ")
-    assert text.endswith(warning.shown() + "\n  load_cfg()\n")
+    assert text.endswith(warning.shown() + "\n  App.load()\n")
 
 
 # ── lists and dictionaries of sections ──────────────────────────────────────
 
-@cfg
-class Server:
+class Server(Config):
     host: str
     port: Port = 80
     token: SecretStr | None = None
 
 
-@cfg
-class Fleet:
+class Fleet(Config):
     servers: list[Server]
     pair: tuple[Server, ...] = ()
     by_region: dict[str, Server] = field(default_factory = dict)
@@ -311,8 +297,7 @@ def test_a_secret_in_a_list_of_sections_is_masked():
 
 
 def test_strict_false_reaches_the_items_too():
-    @cfg(strict = False)
-    class LooseFleet:
+    class LooseFleet(Config, strict = False):
         servers: list[Server]
         by_region: dict[str, Server]
 
@@ -323,13 +308,14 @@ def test_strict_false_reaches_the_items_too():
 
 def test_the_warning_says_where_the_class_is_written():
     warning = ConfigWarning("app.toml", Loose, [{"type": "unknown", "loc": ["app.toml", "x"], "msg": "m"}])
-    assert f"for Loose ({__file__}:39):" in str(warning)            # the line of @cfg(strict = False) above
+    line = open(__file__).read().splitlines().index("class Loose(Config, strict = False):") + 1
+    assert f"for Loose ({__file__}:{line}):" in str(warning)          # the line of its class statement
 
 
 def test_the_warning_leaves_the_place_out_where_it_cant_be_found():
-    made = cfg(strict = False)(type("Made", (), {"__annotations__": {"name": str}}))    # no file, no first line
+    made = type("Made", (Config,), {"__annotations__": {"name": str}}, strict = False)    # no file, no first line
     namespace: dict = {}
-    exec("from cfgcast import cfg\n@cfg(strict = False)\nclass Typed:\n    name: str\n", namespace)    # a file that isn't there
+    exec("from cfgcast import Config\nclass Typed(Config, strict = False):\n    name: str\n", namespace)    # a file that isn't there
     for schema in (made, namespace["Typed"]):
         with pytest.warns(ConfigWarning) as caught:
             build(schema, {"name": "x", "y": 1}, "app.toml")
@@ -338,8 +324,7 @@ def test_the_warning_leaves_the_place_out_where_it_cant_be_found():
 
 # ── a __post_init__ that raises ─────────────────────────────────────────────
 
-@cfg
-class Checked:
+class Checked(Config):
     host: str
     password: SecretStr = SecretStr("")
     port: int = 1
@@ -353,8 +338,7 @@ class Checked:
             raise RuntimeError
 
 
-@cfg
-class Guarded:
+class Guarded(Config):
     name: str
     main: Checked
     others: list[Checked] = field(default_factory = list)

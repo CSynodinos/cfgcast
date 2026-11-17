@@ -1,25 +1,22 @@
-"""Overrides at load time: `load_cfg(..., overrides = {...})` and `parse_overrides`."""
+"""Overrides at load time: `(overrides = {...}).load(...)` and `parse_overrides`."""
 import pytest
 
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, ConfigWarning, cfg, field, load_cfg, parse_overrides, sources_of
+from cfgcast import Config, ConfigError, ConfigWarning, field, parse_overrides, sources_of
 
 
-@cfg(keys = "kebab-case")
-class Pool:
+class Pool(Config, keys = "kebab-case"):
     max_size: int = 1
 
 
-@cfg
-class Db:
+class Db(Config):
     host: str = "h"
     port: Port = 5432
     password: SecretStr = SecretStr("p")
     pool: Pool = field(default_factory = Pool)
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     db: Db = field(default_factory = Db)
     hosts: list[str] = field(default_factory = list)
@@ -34,11 +31,11 @@ def file(tmp_path):
     return path
 
 
-# ── load_cfg(overrides = ...) ───────────────────────────────────────────────
+# ── load(overrides = ...) ───────────────────────────────────────────────────
 
 def test_overrides_go_over_files_and_variables_and_sections_merge(file):
     given = {"db": {"port": "9090"}, "debug": True}
-    app = load_cfg(file, App, env_prefix = "APP_", env = {"APP_DB__PORT": "2", "APP_DB__HOST": "env"}, overrides = given)
+    app = App.load(file, env_prefix = "APP_", env = {"APP_DB__PORT": "2", "APP_DB__HOST": "env"}, overrides = given)
     assert (app.db.port, app.db.host, app.debug, app.name, app.hosts) == (9090, "env", True, "n", ["a"])
     assert given == {"db": {"port": "9090"}, "debug": True}             # the caller's is not changed
     assert sources_of(app)["db.port"] == "overrides" and sources_of(app)["db.host"] == "APP_DB__HOST"
@@ -46,18 +43,18 @@ def test_overrides_go_over_files_and_variables_and_sections_merge(file):
 
 
 def test_none_and_an_empty_dictionary_change_nothing(file):
-    assert load_cfg(file, App, overrides = {}) == load_cfg(file, App, overrides = None) == load_cfg(file, App)
+    assert App.load(file, overrides = {}) == App.load(file, overrides = None) == App.load(file)
 
 
 def test_overrides_alone_are_a_load(file):
-    assert load_cfg([], App, overrides = {"name": "only"}).name == "only"
+    assert App.load([], overrides = {"name": "only"}).name == "only"
     with pytest.raises(ValueError, match = "no file to load"):
-        load_cfg([], App)
+        App.load([])
 
 
 def test_a_problem_of_an_override_names_overrides_and_masks_a_secret(file):
     with pytest.raises(ConfigError) as caught:
-        load_cfg(file, App, overrides = {"db": {"port": 0, "password": 5, "prot": 1}, "hosts": ["a", 2]})
+        App.load(file, overrides = {"db": {"port": 0, "password": 5, "prot": 1}, "hosts": ["a", 2]})
     assert sorted(e["loc"] for e in caught.value.errors()) == [
         ["overrides", "db", "password"], ["overrides", "db", "port"], ["overrides", "db", "prot"], ["overrides", "hosts", 1]]
     assert caught.value.files == (str(file), "overrides")
@@ -66,27 +63,26 @@ def test_a_problem_of_an_override_names_overrides_and_masks_a_secret(file):
 
 
 def test_an_override_a_lenient_schema_ignores_is_warned_about(file):
-    @cfg(strict = False)
-    class Loose:
+    class Loose(Config, strict = False):
         name: str
 
     with pytest.warns(ConfigWarning, match = "-> overrides: nope"):
-        assert load_cfg(file, Loose, overrides = {"nope": 1}).name == "n"
+        assert Loose.load(file, overrides = {"nope": 1}).name == "n"
 
 
 def test_overrides_are_not_under_the_section_of_a_file(tmp_path):
     path = tmp_path / "pyproject.toml"
     path.write_text('[tool.app]\nname = "n"\n')
-    assert load_cfg(path, App, section = "tool.app", overrides = {"db": {"port": 7}}).db.port == 7
+    assert App.load(path, section = "tool.app", overrides = {"db": {"port": 7}}).db.port == 7
     with pytest.raises(ConfigError) as caught:
-        load_cfg(path, App, section = "tool.app", overrides = {"db": {"port": 0}})
+        App.load(path, section = "tool.app", overrides = {"db": {"port": 0}})
     assert caught.value.errors()[0]["loc"] == ["overrides", "db", "port"]
 
 
 @pytest.mark.parametrize("bad", [[("a", 1)], "a=1", 3])
 def test_overrides_that_are_no_dictionary_are_refused(file, bad):
     with pytest.raises(TypeError, match = "overrides must be a dictionary of keys"):
-        load_cfg(file, App, overrides = bad)
+        App.load(file, overrides = bad)
 
 
 # ── parse_overrides ─────────────────────────────────────────────────────────
@@ -104,12 +100,12 @@ def test_keys_are_matched_to_the_schema_and_an_unknown_one_is_kept_for_the_load(
     given = parse_overrides(["db.prot=1", "nope.deep=x"], App)
     assert given == {"db": {"prot": "1"}, "nope": {"deep": "x"}}
     with pytest.raises(ConfigError) as caught:
-        load_cfg(file, App, overrides = given)
+        App.load(file, overrides = given)
     assert sorted(e["loc"] for e in caught.value.errors()) == [["overrides", "db", "prot"], ["overrides", "nope"]]
 
 
 def test_parsed_overrides_load(file):
-    app = load_cfg(file, App, overrides = parse_overrides(["db.port=9090", "debug=yes", "hosts=x,y"], App))
+    app = App.load(file, overrides = parse_overrides(["db.port=9090", "debug=yes", "hosts=x,y"], App))
     assert (app.db.port, app.debug, app.hosts, app.db.host) == (9090, True, ["x", "y"], "file")
 
 
@@ -139,5 +135,5 @@ def test_what_is_no_list_of_texts_or_no_schema_is_refused():
             parse_overrides(bad, App)
     with pytest.raises(TypeError, match = "argument 2 is no text"):
         parse_overrides(["a=1", 2], App)
-    with pytest.raises(TypeError, match = "is not a @cfg class"):
+    with pytest.raises(TypeError, match = "is no configuration"):
         parse_overrides([], dict)

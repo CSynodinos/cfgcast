@@ -4,6 +4,7 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from uuid import UUID
+import sys
 
 import pytest
 
@@ -97,20 +98,17 @@ def test_null_in_json_and_yaml(tmp_path):
 # ── ini ─────────────────────────────────────────────────────────────────────
 
 def test_ini_layout_and_round_trip(tmp_path):
-    from cfgcast import cfg
+    from cfgcast import Config
 
-    @cfg
-    class Pool:
+    class Pool(Config):
         size: int
         hosts: list[str]
 
-    @cfg
-    class Db:
+    class Db(Config):
         host: str
         pool: Pool
 
-    @cfg
-    class App:
+    class App(Config):
         name: str
         tags: list[str]
         none: list[str]
@@ -217,8 +215,8 @@ WHEN = {
 def test_toml_writes_dates_and_times_as_its_own_literals(tmp_path):
     write_toml(tmp_path / "x.toml", WHEN)
     text = (tmp_path / "x.toml").read_text()
-    assert "day = 2026-10-17\n" in text and "at = 2026-10-17T12:30:05\n" in text and "clock = 02:15:00\n" in text
-    assert "exact = 2026-10-17T12:30:05.123456+02:00\n" in text and "days = [2026-01-01, 2026-12-31]\n" in text
+    assert "day = 2026-10-17\n" in text and "at = 2026-10-17 12:30:05\n" in text and "clock = 02:15:00\n" in text
+    assert "exact = 2026-10-17 12:30:05.123456+02:00\n" in text and "days = [2026-01-01, 2026-12-31]\n" in text
     assert read_toml(tmp_path / "x.toml") == WHEN                   # the same objects back, offsets included
 
 
@@ -231,7 +229,7 @@ def test_yaml_writes_dates_bare_and_a_time_quoted(tmp_path):
     pytest.importorskip("yaml")
     write_yaml(tmp_path / "x.yaml", WHEN)
     text = (tmp_path / "x.yaml").read_text()
-    assert "day: 2026-10-17\n" in text and 'clock: "02:15:00"\n' in text and "  - 2026-01-01\n" in text
+    assert "day: 2026-10-17\n" in text and "clock: '02:15:00'\n" in text and "  - 2026-01-01\n" in text
     assert read_yaml(tmp_path / "x.yaml") == {**WHEN, "clock": "02:15:00"}    # a date and a datetime back
 
 
@@ -388,3 +386,17 @@ def test_a_none_in_a_toml_list_names_its_key_and_no_value(tmp_path):
     assert str(caught.value).startswith("db.keys: TOML has no null")
     assert "hunter2" not in str(caught.value)
     assert not file.exists()
+
+
+def test_writing_yaml_without_pyyaml_says_what_to_install_and_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "yaml", None)                  # as if PyYAML were not installed
+    with pytest.raises(ModuleNotFoundError, match = r"writing YAML needs PyYAML: pip install cfgcast\[yaml\]"):
+        write_yaml(tmp_path / "x.yaml", {"a": 1})
+    assert not (tmp_path / "x.yaml").exists()
+
+
+def test_a_yaml_line_break_of_unicode_is_escaped_not_written_raw():
+    pytest.importorskip("yaml")
+    from cfgcast._writers import yaml_text
+    for text in ("nel\x85here", "line separator", "bom﻿"):
+        assert yaml_text({"s": text}).count("\n") == 1 and yaml_text({"s": text}).startswith('s: "')

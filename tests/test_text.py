@@ -11,7 +11,7 @@ import tomllib
 import pytest
 
 from enforced.data_types import Port, SecretStr
-from cfgcast import ConfigError, cfg, load_cfg, to_dict, to_text, write
+from cfgcast import Config, ConfigError, to_dict, to_text, write
 from cfgcast._writers import write_json, write_toml
 
 
@@ -20,16 +20,14 @@ class Level(Enum):
     HIGH = "high"
 
 
-@cfg
-class Db:
+class Db(Config):
     host: str
     port: Port = 5432
     password: SecretStr = SecretStr("hunter2")
     keys: list[SecretStr] = field(default_factory = lambda: [SecretStr("k1"), SecretStr("k2")])
 
 
-@cfg
-class App:
+class App(Config):
     name: str
     db: Db
     home: Path = Path("/srv/app")
@@ -77,7 +75,7 @@ def test_text_is_what_write_writes_but_for_the_secrets(tmp_path, cfg_type):
     written = path.read_text(encoding = "utf-8")
     assert to_text(APP, cfg_type, reveal_secrets = True) == written and "hunter2" in written
     masked = to_text(APP, cfg_type)
-    mask = '"**********"' if cfg_type == "yaml" else "**********"       # YAML quotes it: a bare * starts an alias
+    mask = "'**********'" if cfg_type == "yaml" else "**********"       # YAML quotes it: a bare * starts an alias
     assert "hunter2" not in masked and "k1" not in masked
     assert masked == written.replace("hunter2", mask).replace("k1", mask).replace("k2", mask)
 
@@ -86,20 +84,11 @@ def test_json_is_the_default_and_the_text_loads(tmp_path):
     assert json.loads(to_text(APP))["db"]["password"] == "**********"
     assert tomllib.loads(to_text(APP, "toml", reveal_secrets = True))["db"]["password"] == "hunter2"
     (tmp_path / "app.json").write_text(to_text(APP, reveal_secrets = True))
-    assert load_cfg(tmp_path / "app.json", App) == APP
-
-
-def test_overrides_of_a_text_are_checked_and_never_change_the_object():
-    assert json.loads(to_text(APP, overrides = {"db": {"port": "81"}, "name": "other"}))["db"]["port"] == 81
-    assert APP.db.port == 5432 and APP.name == "shop"
-    with pytest.raises(ConfigError) as info:
-        to_text(APP, overrides = {"db": {"port": 0, "password": ["oops"]}})
-    assert [e["loc"] for e in info.value.errors()] == [["<overrides>", "db", "port"], ["<overrides>", "db", "password"]]
-    assert "oops" not in str(info.value)
+    assert App.load(tmp_path / "app.json") == APP
 
 
 def test_what_to_text_refuses():
-    with pytest.raises(TypeError, match = "to_text takes an instance"):
+    with pytest.raises(TypeError, match = "to_text takes a configuration"):
         to_text(App)
     with pytest.raises(ValueError, match = "Unsupported configuration type"):
         to_text(APP, "xml")                                           # type: ignore[arg-type]
