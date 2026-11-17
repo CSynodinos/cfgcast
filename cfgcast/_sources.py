@@ -29,7 +29,7 @@ type Problem = dict[str, Any]
 
 SOURCES_ATTR = "__cfg_sources__"                                   # on a built instance: (its Sources, its key path)
 DEFAULT = "(default)"                                               # the source of a value no source gave
-OVERRIDES = "overrides"                                             # the source of what `load_cfg(overrides = ...)` gave
+OVERRIDES = "overrides"                                             # the source of what `load(overrides = ...)` gave
 NO_FILE = "(no file)"                                               # the source of a load that read nothing
 
 
@@ -48,7 +48,7 @@ class OptionalFile:
 
 def optional(path: str | os.PathLike[str]) -> OptionalFile:
     """
-    Mark a file as one that may be absent: `load_cfg(["base.toml", optional("local.toml")], App)` reads
+    Mark a file as one that may be absent: `App.load(["base.toml", optional("local.toml")])` reads
     `local.toml` if it is there, and goes on without it if not. Every file not marked must be there.
 
     Only "not there" is skipped. A file that is there is read like any other: one that can't be read,
@@ -68,7 +68,7 @@ class Sources:
     `of(path)` the one that gave the value at a key path: the nearest noted above it, else the last file.
     `lines` has, per source, the line of each key path that is known (a `.env` file's variables).
 
-    `prefix` is the section of the files the schema was read from (`load_cfg(..., section = "tool.app")`),
+    `prefix` is the section of the files the schema was read from (`App.load(..., section = "tool.app")`),
     `files` the sources that are such files: a problem of theirs has the whole path in the file as its
     `loc`, the section first. A variable names the schema's own path.
     """

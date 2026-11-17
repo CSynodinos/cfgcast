@@ -47,7 +47,7 @@ def read_yaml(file: str | os.PathLike[str]) -> RawConfigData:
     """
     `yaml.safe_load` with YAML 1.2 booleans: a `SafeLoader` whose bool resolver matches only
     `true` / `false`, so `country: no` stays `"no"` (a `bool` field still takes `yes`
-    through enforced's coercion). PyYAML is imported here and only here: a `ModuleNotFoundError`
+    through enforced's coercion). PyYAML is imported here, and by the YAML writer: a `ModuleNotFoundError`
     that says `pip install cfgcast[yaml]` when it is missing. An empty file is an empty mapping.
     """
     return parse_yaml(text_of(file, "yaml"), file)

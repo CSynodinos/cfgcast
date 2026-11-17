@@ -6,9 +6,9 @@ and a wrong configuration alike) and a `ValueError` (what a bad file has always 
 
 It is made two ways:
 
-- by `_build`, for a file or a dictionary (`load_cfg`, `from_dict`, `write`'s overrides): with the file,
+- by `_build`, for a file or a dictionary (`load`, `from_dict`): with the file,
   the schema and the entries, its `loc`s start with the file;
-- by enforced itself, for a direct construction or assignment of a `@cfg` class (`App(name = 1)`): `@cfg`
+- by enforced itself, for a direct construction or assignment of a configuration (`App(name = 1)`): `Config`
   passes `error = ConfigError` to `enforced.dataclass`. enforced never runs this class's `__init__`, so
   `file`, `schema` and `entries` are `None` (class attributes), and `errors()` and the message come from
   enforced's problems, their `loc`s without a file.
@@ -18,6 +18,7 @@ unknown key's value not at all: nothing says it isn't a secret.
 
 `ConfigWarning` says which unknown keys a lenient schema (`strict = False`) ignored, in the same shape.
 """
+from dataclasses import FrozenInstanceError
 from typing import Any, Callable, Sequence
 from enforced import InvalidDataError, InvalidDataWarning
 from clitint import formatter
@@ -33,8 +34,8 @@ MASK = "**********"                                                 # what Secre
 
 class ConfigError(InvalidDataError, ValueError):
     """
-    Raised by `load_cfg`, `from_dict`, `write` (overrides), and by a `@cfg` class constructed or
-    assigned to directly. The input of a `SecretStr` field is never shown, in the message or in
+    Raised by `load` and `from_dict`, and by a configuration constructed or assigned to
+    directly. The input of a `SecretStr` field is never shown, in the message or in
     `errors()`.
     """
 
@@ -90,11 +91,19 @@ class ConfigError(InvalidDataError, ValueError):
         return (type(self), (self.files, self.schema, self.entries))
 
 
+class FrozenConfigError(FrozenInstanceError):
+    """
+    An assignment to, or a deletion of, an attribute of a frozen configuration (`frozen = True`, the default).
+    A `dataclasses.FrozenInstanceError`, so an `AttributeError`: what catches those catches this. The message
+    names the class and the key path (`db.port` for a section of a loaded configuration), never the value.
+    """
+
+
 class ConfigWarning(InvalidDataWarning):
     """
     The unknown keys a load ignored because of `strict = False`, one warning for all of them. It holds
-    their paths and never their values. `show_warnings = False` leaves it out, and
-    `warnings.filterwarnings("error", category = ConfigWarning)` or `pytest -W error::cfgcast.ConfigWarning` turns
+    their paths and never their values. `warnings.filterwarnings("ignore", category = ConfigWarning)`
+    leaves it out, and `warnings.filterwarnings("error", category = ConfigWarning)` or `pytest -W error::cfgcast.ConfigWarning` turns
     it into an error (not `python -W`, read before an installed package can be imported).
     """
 

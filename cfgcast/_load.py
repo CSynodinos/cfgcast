@@ -1,7 +1,7 @@
-"""`load_cfg`: read a file (or several, in layers, a `.env` file and the environment over them) and build the schema from it."""
+"""`Config.load`: read a file (or several, in layers, a `.env` file and the environment over them) and build the schema from it."""
 from ._errors import ConfigError, Problem
 from ._readers import PARSERS, CfgType, RawConfigData, split_lists, text_of
-from ._base import SUFFIXES, _format_of, is_config
+from ._base import SUFFIXES, File, _format_of, is_config
 from ._build import build
 from ._hints import options_of
 from ._locate import locate
@@ -10,61 +10,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 import os
 
-__all__ = ["SUFFIXES", "load_cfg", "parse_overrides"]
-
-type File = str | os.PathLike[str] | OptionalFile
-
-
-def load_cfg[T](
-    file: File | Sequence[File],
-    schema: type[T],
-    cfg_type: CfgType | Literal["infer"] = "infer",
-    *,
-    env_prefix: str | None = None,
-    env: Mapping[str, str] | None = None,
-    env_file: File | None = None,
-    section: str | Sequence[str] | None = None,
-    overrides: Mapping[str, Any] | None = None,
-    show_warnings: bool = True) -> T:
-    """
-    Read `file` and return an instance of `schema`, or raise a `ConfigError` with every
-    problem found (unknown keys, missing keys, wrong values), each with its file and key path.
-
-    Args:
-        file: one file, or a list of them read in layers: `load_cfg(["base.toml", "prod.toml"], App)`.
-            Sections merge key by key and a later file's value replaces an earlier one's (a list is
-            replaced, never appended to). Unknown and missing keys are checked once, on the result,
-            and each problem names the file its value came from. Every file must be there, unless it
-            is marked: `optional("local.toml")` is read if it is there.
-        cfg_type: `"infer"` takes the format from each file's suffix (`SUFFIXES`); a format named
-            here holds for every file.
-        env_prefix: read environment variables over the files: with `"APP_"`, `APP_DB__PORT=9090` is
-            `db.port` (`__` between levels, names matched without regard to case). A variable that names
-            no field is ignored, also under `strict`. A list field takes `a, b, c` or a JSON array, a
-            dictionary field a JSON object. A problem names the variable. With it, `file` may be `[]`.
-            Not given, the `env_prefix` of `@cfg(env_prefix = ...)` is used, if the schema has one.
-        env: the variables, `os.environ` if not given (a test or a workflow hands its own; `{}` reads none).
-        env_file: a `.env` file of `KEY=VALUE` lines, read with the prefix like the environment, over
-            the files and under the environment (a variable of the process wins). `optional(".env")`
-            for one that may be absent. A problem names the file and the line.
-        section: the part of each file that holds the configuration, where a file holds more:
-            `load_cfg("pyproject.toml", App, section = "tool.myapp")` reads the table `[tool.myapp]`. Dots
-            between levels, or a list of keys (`["tool", "my.app"]`) where a key has a dot. It holds for
-            every file of a list (not for variables, which name the schema's own keys). A file without the
-            section is a problem, as a missing key is. A problem's `loc` is the whole path in the file.
-        overrides: values over every file and variable, for this load: what a command line says
-            (`load_cfg("app.toml", App, overrides = {"db": {"port": 9090}})`). Nested keys as nested
-            dictionaries, as `write` takes them; `parse_overrides` makes them from `db.port=9090` texts.
-            Checked like everything else: a problem of theirs names `overrides`.
-        show_warnings: unknown keys that `strict = False` ignores give one `ConfigWarning` that
-            names them, unless this is `False`.
-    """
-    if not (isinstance(schema, type) and is_config(schema)):
-        raise TypeError(f"load_cfg: {schema!r} is not a @cfg class")
-    return load(
-        schema, file, cfg_type, env_prefix = env_prefix, env = env, env_file = env_file, section = section,
-        overrides = overrides, show_warnings = show_warnings)
-
+__all__ = ["SUFFIXES", "load", "parse_overrides"]
 
 def load(
     schema: type,
@@ -75,9 +21,8 @@ def load(
     env: Mapping[str, str] | None = None,
     env_file: File | None = None,
     section: str | Sequence[str] | None = None,
-    overrides: Mapping[str, Any] | None = None,
-    show_warnings: bool = True) -> Any:
-    """What `load_cfg` and the `load` member of a configuration do."""
+    overrides: Mapping[str, Any] | None = None) -> Any:
+    """What `Config.load` does (its docstring says how)."""
     if env_prefix is not None and not isinstance(env_prefix, str):
         raise TypeError(f"env_prefix must be text (or None for no environment variables), got {env_prefix!r}")
     prefix = env_prefix if env_prefix is not None else options_of(schema).env_prefix
@@ -168,12 +113,12 @@ def load(
         layer(merged, data, name, sources)
         if line is not None:
             sources.lines.setdefault(name, {})[path_] = line
-    return build(schema, merged, sources, show_warnings)
+    return build(schema, merged, sources)
 
 
 def parse_overrides(arguments: Sequence[str], schema: type) -> dict[str, Any]:
     """
-    The `overrides` of `load_cfg` from texts as a command line has them: `["db.port=9090", "debug=true"]` is
+    The `overrides` of `Config.load` from texts as a command line has them: `["db.port=9090", "debug=true"]` is
     `{"db": {"port": "9090"}, "debug": "true"}`. A dot between levels, the value everything after the first
     `=`. Values stay text (the load converts them), except where the schema's field is a list (`hosts=a,b`
     or a JSON array) or a dictionary (a JSON object), as for an environment variable. A key is matched to
@@ -181,13 +126,13 @@ def parse_overrides(arguments: Sequence[str], schema: type) -> dict[str, Any]:
     is kept as written, for the load to report with everything else.
 
         >>> overrides = parse_overrides(sys.argv[1:], App)
-        >>> app = load_cfg("app.toml", App, overrides = overrides)
+        >>> app = App.load("app.toml", overrides = overrides)
 
     A `ValueError` for an argument that is no `KEY=VALUE`, and for two that can't both hold (`db=x` and
     `db.port=1`): it names the argument's position or its key, never its value. The same key twice: the later one.
     """
     if not (isinstance(schema, type) and is_config(schema)):
-        raise TypeError(f"parse_overrides: {schema!r} is not a @cfg class")
+        raise TypeError(f"parse_overrides: {schema!r} is no configuration (a class below Config)")
     if isinstance(arguments, str) or not isinstance(arguments, Sequence):
         raise TypeError(f"parse_overrides takes a list of KEY=VALUE texts, got {type(arguments).__name__}")
     found: dict[str, Any] = {}

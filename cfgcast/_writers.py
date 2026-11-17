@@ -1,8 +1,10 @@
 """
-One writer per format, our own: a dictionary in, a file out. The counterpart of `_readers`.
+One writer per format: a dictionary in, a file out. The counterpart of `_readers`. JSON is the
+standard library's, a TOML value or key tomli-w's, YAML PyYAML's (`safe_dump`, with our rule for
+what is quoted); the layout of TOML (`[table]`, `[[array]]`, a list on one line) and all of ini are ours.
 
 A writer is handed plain data, prepared by `write`: the configuration as a dictionary
-(sections as nested dictionaries), the overrides merged in and checked. So a writer meets
+(sections as nested dictionaries). So a writer meets
 `dict`, `list`, `str`, `int`, `float`, `bool` and `None`, and knows nothing of the schema. Every
 key is written, also one equal to its code default.
 
@@ -28,12 +30,14 @@ from enforced import dispatch
 from enforced.data_types import SecretStr
 from ._errors import MASK
 from ._readers import CfgType, RawConfigData
+import functools
 import json
 import math
 import os
 import re
 import secrets
 import stat
+import tomli_w
 
 
 def json_text(data: RawConfigData, *, indent: int | None = 2, mask: bool = False) -> str:
@@ -45,11 +49,10 @@ def json_text(data: RawConfigData, *, indent: int | None = 2, mask: bool = False
 
 def toml_text(data: RawConfigData, *, mask: bool = False) -> str:
     """
-    TOML, our own (`tomllib` only reads). Top-level keys first, then each section as a
-    `[table]` and nested ones as `[db.replica]`; a list of dictionaries as `[[array]]`.
-    Strings are basic strings with `\\`, `"` and control characters escaped; a key that isn't
-    bare (`A-Za-z0-9_-`) is quoted. `inf` / `nan` are written as TOML has them. A `None` in a
-    list is a `ValueError` (TOML has no null).
+    TOML: top-level keys first, then each section as a `[table]` and nested ones as `[db.replica]`; a
+    list of dictionaries as `[[array]]`, a list of values on one line. Each value and key as tomli-w
+    writes it (strings escaped, a key that isn't bare quoted, `inf` / `nan` as TOML has them). A `None`
+    in a list is a `ValueError` (TOML has no null).
     """
     lines: list[str] = []
     _toml_table(lines, _plain(data, mask), (), header = False)
@@ -76,18 +79,12 @@ def ini_text(data: RawConfigData, *, mask: bool = False) -> str:
 
 def yaml_text(data: RawConfigData, *, mask: bool = False) -> str:
     """
-    YAML, our own (PyYAML not needed to write): block style, two spaces of indent. A string is
-    quoted when a YAML 1.1 reader would take it for something else (`no`, `on`, `08`, `1e3`,
-    `null`, `~`), when it starts or ends with a space, or holds `:`, `#` or a special
-    character first: other readers in a workflow get the string too.
+    YAML, by PyYAML's `safe_dump` (PyYAML is needed to write it, as to read it): block style, two spaces
+    of indent, a list too. A string is quoted when a YAML 1.1 or 1.2 reader would take it for something
+    else (`no`, `on`, `y`, `08`, `1e3`, `null`, `~`, `12:30`), and wherever PyYAML would quote it (a
+    space around it, `: `, ` #`, a special character first): other readers in a workflow get the string too.
     """
-    lines: list[str] = []
-    plain = _plain(data, mask)
-    if plain:
-        _yaml_mapping(lines, plain, 0)
-    else:
-        lines.append("{}")
-    return "\n".join(lines) + "\n"
+    return _yaml_dump(_plain(data, mask))
 
 
 #* The text of each format: `mask = True` writes a secret as the mask (text that is shown), False as its real text (a file).
@@ -289,24 +286,14 @@ def _number(value: int | float, inf: str, nan: str) -> str:
 
 # ── TOML ────────────────────────────────────────────────────────────────────
 
-_TOML_BARE = re.compile(r"[A-Za-z0-9_-]+")
-_TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
-
-
-def _toml_string(text: str) -> str:
-    out = []
-    for char in text:
-        if char in _TOML_ESCAPES:
-            out.append(_TOML_ESCAPES[char])
-        elif ord(char) < 0x20 or ord(char) == 0x7F:
-            out.append(f"\\u{ord(char):04X}")
-        else:
-            out.append(char)
-    return '"' + "".join(out) + '"'
+def _toml_scalar(node: Any) -> str:
+    """A text, number, bool, date or time as tomli-w writes it."""
+    return tomli_w.dumps({"v": node})[len("v = "):-1]
 
 
 def _toml_key(key: str) -> str:
-    return key if _TOML_BARE.fullmatch(key) else _toml_string(key)
+    """A key as tomli-w writes it: bare where it can be, quoted otherwise."""
+    return tomli_w.dumps({key: 0})[:-len(" = 0\n")]
 
 
 @dispatch
@@ -316,30 +303,15 @@ def _toml_value(node: Any, where: str) -> str:
 
 
 @_toml_value.register
-def _(node: bool, where: str) -> str:
-    return "true" if node else "false"
-
-
-@_toml_value.register
-def _(node: int | float, where: str) -> str:
-    return _number(node, "inf", "nan")
-
-
-@_toml_value.register
-def _(node: str, where: str) -> str:
-    return _toml_string(node)
-
-
-@_toml_value.register
-def _(node: date, where: str) -> str:
-    return node.isoformat()
+def _(node: bool | int | float | str | date, where: str) -> str:
+    return _toml_scalar(node)
 
 
 @_toml_value.register
 def _(node: time, where: str) -> str:
     if node.tzinfo is not None:
-        return _toml_string(node.isoformat())                       # TOML's local time has no offset
-    return node.isoformat()
+        return _toml_scalar(node.isoformat())                       # TOML's local time has no offset
+    return _toml_scalar(node)
 
 
 @_toml_value.register
@@ -449,7 +421,7 @@ def _ini_sections(lines: list[str], table: dict[str, Any], path: tuple[str, ...]
 
 #* Plain scalars a YAML reader (1.1 or 1.2) would take for something other than a string: booleans
 #* and their 1.1 words, nulls, numbers in every notation 1.1 knows (octal 010, sexagesimal 1:20, 1_000),
-#* and timestamps. A string that matches is written quoted.
+#* and timestamps. A string that matches is written quoted, where PyYAML (1.1 only, and no y / n) might not.
 _YAML_SPECIAL = re.compile(r"""(?x)
     (?: y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF
       | null|Null|NULL|~
@@ -461,75 +433,48 @@ _YAML_SPECIAL = re.compile(r"""(?x)
       | [0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt ].*)?
       | << | =
     )""")
-_YAML_FIRST = set("-?:,[]{}#&*!|>'\"%@`")
 
 
-def _yaml_string(text: str) -> str:
-    plain = (
-        text and not _YAML_SPECIAL.fullmatch(text) and text[0] not in _YAML_FIRST
-        and text == text.strip() and ": " not in text and " #" not in text and not text.endswith(":")
-        and all(char.isprintable() for char in text)
-        )
-    if plain:
-        return text
-    #* A JSON string is a YAML double-quoted one, but for what JSON leaves as it is and YAML doesn't take
-    #* (DEL, NEL, a line separator, a BOM ...): those as YAML's escapes.
-    return "".join(char if char.isprintable() else _yaml_escape(char) for char in json.dumps(text, ensure_ascii = False))
+@functools.cache
+def _yaml_dumper() -> Any:
+    """PyYAML's `SafeDumper` with our rules: a string a reader would misread is quoted, a time is text, a list is indented."""
+    import yaml                                                     # PyYAML is an extra: imported where it is needed
+
+    class Dumper(yaml.SafeDumper):
+        def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+            return super().increase_indent(flow, False)             # a list under its key is indented, as a section is
+
+    def text(dumper: yaml.SafeDumper, value: str) -> Any:
+        if not value.isprintable():                                 # escaped: raw, a NEL or a line separator is a line break to YAML
+            return dumper.represent_scalar("tag:yaml.org,2002:str", value, style = '"')
+        if _YAML_SPECIAL.fullmatch(value):
+            return dumper.represent_scalar("tag:yaml.org,2002:str", value, style = "'")
+        return dumper.represent_str(value)
+
+    def clock(dumper: yaml.SafeDumper, value: time) -> Any:
+        return text(dumper, value.isoformat())                      # YAML has no time: text (12:30:00 is a number to YAML 1.1)
+
+    Dumper.add_representer(str, text)
+    Dumper.add_representer(time, clock)
+    return Dumper
 
 
-def _yaml_escape(char: str) -> str:
-    code = ord(char)
-    return f"\\x{code:02X}" if code <= 0xFF else f"\\u{code:04X}" if code <= 0xFFFF else f"\\U{code:08X}"
-
-
-def _yaml_scalar(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        text = _number(value, ".inf", ".nan")
-        if "e" in text and "." not in text:                         # YAML 1.1 (PyYAML) reads 1e+16 as text: 1.0e+16
-            text = text.replace("e", ".0e", 1)
-        return text
-    if isinstance(value, time):
-        return json.dumps(value.isoformat())                        # bare, 12:30:00 is a number to YAML 1.1 (base 60)
-    if isinstance(value, date):
-        return value.isoformat()                                    # a bare timestamp: read back as a date / datetime
-    return _yaml_string(value)
+def _yaml_dump(value: Any) -> str:
+    try:
+        import yaml
+    except ModuleNotFoundError as missing:
+        raise ModuleNotFoundError(
+            "writing YAML needs PyYAML: pip install cfgcast[yaml] (or pip install PyYAML)", name = "yaml"
+            ) from missing
+    return yaml.dump(
+        value, Dumper = _yaml_dumper(), sort_keys = False, allow_unicode = True, default_flow_style = False, width = 1 << 30)
 
 
 def _yaml_key(key: str) -> str:
-    return _yaml_string(key)
+    """A key as the YAML writer writes it."""
+    return _yaml_dump({key: None})[:-len(": null\n")]
 
 
 def _yaml_mapping(lines: list[str], mapping: dict[str, Any], indent: int) -> None:
-    pad = " " * indent
-    for key, value in mapping.items():
-        if isinstance(value, dict) and value:
-            lines.append(f"{pad}{_yaml_key(key)}:")
-            _yaml_mapping(lines, value, indent + 2)
-        elif isinstance(value, list) and value:
-            lines.append(f"{pad}{_yaml_key(key)}:")
-            _yaml_sequence(lines, value, indent + 2)
-        else:
-            empty = "{}" if isinstance(value, dict) else "[]" if isinstance(value, list) else _yaml_scalar(value)
-            lines.append(f"{pad}{_yaml_key(key)}: {empty}")
-
-
-def _yaml_sequence(lines: list[str], sequence: list[Any], indent: int) -> None:
-    pad = " " * indent
-    for item in sequence:
-        if isinstance(item, dict) and item:
-            nested: list[str] = []
-            _yaml_mapping(nested, item, indent + 2)
-            lines.append(f"{pad}- {nested[0].lstrip()}")            # the first key on the dash's line
-            lines += nested[1:]
-        elif isinstance(item, list) and item:
-            nested = []
-            _yaml_sequence(nested, item, indent + 2)
-            lines.append(f"{pad}- {nested[0].lstrip()}")
-            lines += nested[1:]
-        else:
-            empty = "{}" if isinstance(item, dict) else "[]" if isinstance(item, list) else _yaml_scalar(item)
-            lines.append(f"{pad}- {empty}")
+    """The lines of `mapping` as the YAML writer writes it, each indented by `indent`."""
+    lines += [" " * indent + line for line in _yaml_dump(mapping).splitlines()]

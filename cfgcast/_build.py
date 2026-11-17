@@ -26,18 +26,16 @@ from ._sources import SOURCES_ATTR, Path, Sources
 _OUR_FILES = (os.path.dirname(os.path.abspath(__file__)) + os.sep,)
 
 
-def build[T](schema: type[T], data: dict[str, Any], file: str | Sources, show_warnings: bool = True) -> T:
+def build[T](schema: type[T], data: dict[str, Any], file: str | Sources) -> T:
     """
     `schema` from `data`; a `ConfigError` with all of `problems_of` if there are any. Unknown keys that
     were ignored are warned about first, also when an error follows: `prot` ignored explains `port` missing.
     `file` is the one file the data came from, or the `Sources` of a load from several.
     """
-    if type(show_warnings) is not bool:
-        raise TypeError(f"show_warnings must be True or False, got {show_warnings!r}")
     sources = file if isinstance(file, Sources) else Sources((str(file),))
     run = _Run(sources)
     built, problems = _build(schema, data, (), False, run)
-    if run.ignored and show_warnings:
+    if run.ignored:
         #* skip_file_prefixes: the warning points at the caller's line, whichever way in was taken.
         warnings.warn(ConfigWarning(sources.names, schema, run.ignored), skip_file_prefixes = _OUR_FILES)
     if problems:

@@ -2,8 +2,8 @@
 What an annotation says, asked the same way by every module: the members of a hint, whether it
 holds a secret, whether its field is a section (or a list / dictionary of sections) or a list.
 
-A section is any dataclass (a `@cfg` class is one): this module is below `_base`, and doesn't know
-`@cfg`. `_base._Sections` keeps the `@cfg` ones only.
+A section is any dataclass (a configuration is one): this module is below `_base`, and doesn't know
+`Config`. `_base._Sections` keeps the configurations only.
 """
 from types import UnionType
 from typing import Annotated, Any, Literal, NamedTuple, TypeAliasType, Union, get_args, get_origin, get_type_hints
@@ -15,7 +15,7 @@ OPTIONS_ATTR = "__cfg_options__"
 
 
 class Options(NamedTuple):
-    """What `@cfg(...)` was given, kept on the class as `__cfg_options__` and read by name."""
+    """The options of a configuration (its class keywords, or the ones above it), kept on the class as `__cfg_options__` and read by name."""
     strict: bool = True
     frozen: bool = True
     env_prefix: str | None = None
@@ -33,7 +33,7 @@ def said(field: Any, what: str) -> Any:
 
 
 def styled(name: str, style: str | None) -> str:
-    """A field's name as the key of a file, in the style of `@cfg(keys = ...)`: `max_size` is `max-size` in kebab-case, `class_` is `class`."""
+    """A field's name as the key of a file, in the style of the class's `keys`: `max_size` is `max-size` in kebab-case, `class_` is `class`."""
     return name.rstrip("_").replace("_", "-") if style == "kebab-case" else name
 
 
@@ -48,7 +48,7 @@ def keys_of(schema: type) -> dict[str, Any]:
 
 
 def options_of(schema: type) -> Options:
-    """The options of a `@cfg` class (its own: `vars`, not `getattr`), the defaults for any other dataclass used as a section."""
+    """The options of a configuration (its own: `vars`, not `getattr`), the defaults for any other dataclass used as a section."""
     return vars(schema).get(OPTIONS_ATTR, Options())
 
 

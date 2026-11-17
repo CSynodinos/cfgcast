@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Literal
-from cfgcast import cfg, load_cfg#, turn_colours_off, turn_colours_on
+from cfgcast import Config#, turn_colours_off, turn_colours_on
 from enforced.data_types import Port, SecretStr, Probability, Url, Email, PhoneNumber
 # turn_colours_off()
 # turn_colours_on()
@@ -8,8 +8,7 @@ from enforced.data_types import Port, SecretStr, Probability, Url, Email, PhoneN
 CFGS = Path(__file__).parent / "cfgs"
 
 
-@cfg
-class SimpleCfg:
+class SimpleCfg(Config):
     name: str
     version: str
     debug: bool
@@ -20,22 +19,19 @@ class SimpleCfg:
     hosts: list[str]
 
 
-@cfg
-class Pool:
+class Pool(Config):
     min_size: int
     max_size: int
     timeout: float
 
 
-@cfg
-class Replica:
+class Replica(Config):
     host: str
     port: Port
     read_only: bool
 
 
-@cfg
-class Database:
+class Database(Config):
     host: str
     port: Port
     name: str
@@ -45,23 +41,20 @@ class Database:
     replica: Replica
 
 
-@cfg
-class Cache:
+class Cache(Config):
     backend: str
     ttl: float
     max_items: int
     namespaces: list[str]
 
 
-@cfg
-class Tls:
+class Tls(Config):
     enabled: bool
     cert_path: str
     key_path: str
 
 
-@cfg
-class Server:
+class Server(Config):
     host: str
     port: Port
     workers: int
@@ -69,28 +62,24 @@ class Server:
     tls: Tls
 
 
-@cfg
-class Fleet:
+class Fleet(Config):
     name: str
     servers: list[Server]                                   # a list of sections: TOML's [[servers]]
 
 
-@cfg
-class Rotation:
+class Rotation(Config):
     max_mb: int
     backups: int
 
 
-@cfg
-class Logging:
+class Logging(Config):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
     format: str
     handlers: list[str]
     rotation: Rotation
 
 
-@cfg
-class Features:
+class Features(Config):
     new_checkout: bool
     wishlist: bool
     rollout: Probability
@@ -98,15 +87,13 @@ class Features:
     weights: list[Probability]
 
 
-@cfg
-class Monitoring:
+class Monitoring(Config):
     metrics_url: Url
     sample_rate: Probability
     tags: list[str]
 
 
-@cfg
-class ComplexCfg:
+class ComplexCfg(Config):
     name: str
     environment: str
     debug: bool
@@ -124,8 +111,7 @@ class ComplexCfg:
     monitoring: Monitoring
 
 
-@cfg(strict = False)
-class BadComplexCfg:
+class BadComplexCfg(Config, strict = False):
     name: str
     environment: str
     debug: bool
@@ -144,23 +130,15 @@ class BadComplexCfg:
 
 
 def main():
-    config = load_cfg(
-        file = CFGS / "complex.ini",
-        schema = ComplexCfg
-        )
+    config = ComplexCfg.load(CFGS / "complex.ini")
     print(config)
 
-    load_cfg(
-        file = CFGS / "complex_bad.ini",
-        schema = BadComplexCfg
-        )
+    BadComplexCfg.load(CFGS / "complex_bad.ini")
 
-    fleet = load_cfg(
-        file = CFGS / "fleet.yaml",
-        schema = Fleet
-        )
+    fleet = Fleet.load(CFGS / "fleet.yaml")
 
     print(fleet)
+    fleet.name = "new_fleet_name"
 
 
 if __name__ == "__main__":
