@@ -2,6 +2,9 @@
 
 **Renamed on 2026-11-01** (the owner's choice): the project was `configured` until then.
 
+**`Config` on 2026-11-17** ("Changed on 2026-11-17", below): what is written before that says `@cfg class App`,
+`load_cfg(file, App)` and `from_dict(App, data)`; they are now `class App(Config)`, `App.load(file)`, `App.from_dict(data)`.
+
 **Python 3.13 on 2026-11-03**, with enforced: `_annotated_names` is the only line that differs by version.
 
 ## Decisions
@@ -10,6 +13,7 @@
 - **`load_cfg(file, schema, cfg_type = "infer")`**: `schema` is a `@cfg` class; it returns an instance of it
   (overloads `type[T] -> T`). `cfg_type` is a `Literal`; `"infer"` reads the suffix, and an unknown or missing
   suffix is an error that says to pass `cfg_type`.
+- **Replaced on 2026-11-17 by a base class, `Config`** (see "Changed on 2026-11-17"). What follows is the old decision.
 - **`@cfg` is a decorator, not a base class** (the owner's decision, 2026-10-17: a configuration is a plain
   enforced dataclass, and is not meant to be inherited). `@dataclass_transform` on `cfg` for checkers; `cfg`
   calls `enforced.dataclass(cls, kw_only = True, coerce = True, deep = True, ...)` (in place: no slots).
@@ -634,28 +638,74 @@ Seen and left (the owner's call, or small):
   with it (rule 2 bends here). To gather them the build would have to run on the layers that do have the section.
 - `parse_overrides` keeps a key the schema doesn't have as written, also when its first part matched without case
   (`DB.nope=1` stays `DB.nope`, so the problem says `DB` is unknown, not `db.nope`).
-- `write(overrides: dict)` and `to_text` want a `dict`; `load_cfg(overrides: Mapping)` any mapping. One of the two.
+- ~~`write(overrides: dict)` and `to_text` want a `dict`; `load_cfg(overrides: Mapping)` any mapping.~~ Gone with
+  the overrides of `write` / `to_text` (2026-11-17).
 - `save_template` looks for the file, then writes: a file made between the two is replaced. An exclusive create
   would close it, at the cost of the atomic replace.
 - `__cfg_sources__` is in the instance's `__dict__`: `vars(app)` shows it, pickle and `copy` keep it.
-- `to_dict` / `write` turn only `@cfg` sections into dictionaries; build and the template take any dataclass as a
+- `to_dict` / `write` turn only configurations (classes below `Config`) into dictionaries; build and the template take any dataclass as a
   section (`_hints.section_of`). One rule for both is wanted.
 - YAML: `db:` with every key below it commented out is null, and a null where a section belongs is a `section`
   problem. Should a null for a section that isn't `| None` be an empty section? The template works around it.
 - `_build._hints` and `_Sections` call `get_type_hints` unguarded: an annotation that can't be resolved is Python's
   own `NameError` at the first load, not a `ConfigError`.
 
+## Changed on 2026-11-17
+
+From the owner's review of the library ("an overall opinion", then the answers), each step tested on 3.13 and 3.14.
+
+- **`Config`, a base class, in place of `@cfg`** (the owner's decision, reversing that of 2026-10-17): with
+  inheritance, a decorator on the root only would leave checkers blind to a subclass's own fields
+  (`@dataclass_transform` on a decorator is read for the classes it decorates). On a base class, PEP 681 makes every
+  class below it a dataclass to a checker, with its class keywords: `class App(Config, strict = False)`. `@cfg` is
+  gone, not kept as a second way.
+- **Inheritable** (the owner's decision): `class Prod(App)` is a configuration, `App`'s fields and its own, every one
+  checked (enforced needed no change: checked first, inherited fields are checked and coerced). `strict`,
+  `env_prefix` and `keys` are inherited unless restated. `frozen` is said by each class, as a checker reads it from
+  the class statement (`frozen_default = True`): a class below one that isn't frozen says `frozen = False`, else a
+  `TypeError` that says what to write (dataclasses' own, "cannot inherit frozen dataclass", said nothing of it).
+  Two fields with one key are refused across the classes. A field may not be named `load` / `from_dict`; overriding
+  the methods is allowed now (it was refused: they were copied on).
+- **Loading is class based only** (the owner's decision): `App.load`, `App.from_dict`; `load_cfg`, the `from_dict`
+  function and `Loadable` are gone. Checkers see the members (inherited, `-> Self`), so the known issue of
+  members a decorator adds is gone too. `to_dict`, `to_text`, `write`, `write_template`, `sources_of`,
+  `parse_overrides` stay functions.
+- **`env_prefix` on the class stays** (the owner was not sure; kept, as `App.load()` reading `APP_*` with nothing
+  said at the call is what it is for).
+- **`show_warnings` is gone**: Python's `warnings` filters already do it, also from the command line of pytest.
+- **`write` and `to_text` take no overrides**: `write(obj, file, cfg_type)` writes `obj`. Overrides belong to a load
+  (`App.load(..., overrides = ...)`, then `write`); `dataclasses.replace` and `from_dict` make a variant too.
+- **Writers: libraries where one does the job.** TOML values and keys by **tomli-w** (a new dependency), the layout
+  ours: tomli-w writes every non-empty list on several lines and a list of tables as an array of inline tables,
+  valid but no good in a template (a key is put back by taking one `#` off). YAML by **PyYAML's `SafeDumper`**
+  (needed now to write YAML, as it was to read it), with three rules of ours: what `_YAML_SPECIAL` matches is
+  quoted (PyYAML knows YAML 1.1 only, leaves `08` bare and doesn't know `y` / `n`), a string with a character that
+  isn't printable is double-quoted (PyYAML wrote a NEL raw, which a reader takes for a line break: found by
+  `test_tricky_strings_round_trip`), and a list is indented under its key, as before. JSON was the standard
+  library's already; ini stays ours (its lists and dotted sections are our conventions). What changed in the
+  text: a TOML datetime has a space where it had a `T` (RFC 3339 allows both), and YAML quotes with `'` where it
+  quoted with `"`. 10 000 values: TOML 39 ms, YAML 165 ms (PyYAML's dumper is pure Python).
+- Tests: the old decorator's refusals and the overrides of `write` / `to_text` went with them; inheritance has its
+  own (`test_cfg.py`), the typing samples cover class keywords, inheritance and `Prod.load -> Prod`, and the
+  simulation's checks were rewritten for them (87, as before). 374 tests.
+- **`FrozenConfigError`** (the owner's decision, after the above): an assignment to a frozen configuration raised
+  dataclasses' `FrozenInstanceError` ("cannot assign to field 'host'"). Now cfgcast's own, a subclass of it (so
+  `except FrozenInstanceError` / `AttributeError` still catch it), not of `ConfigError` (a load's `except ConfigError`
+  would swallow a bug). Made in cfgcast, not enforced: it is dataclasses' error, and enforced passes `frozen` through.
+  It says `Database is frozen: db.password can't be assigned (...)`: the key path of a loaded section, never the value.
+  380 tests.
+
 ## What is left
 
 - **6. Durations**: waits on enforced (above).
 - **Maybe** (15): renamed keys (`field(was = ...)`), a union with a section.
 - **Small, from what was built**: a public `template_text` (print a template); several `.env` files and `env_file`
-  on `@cfg`; `secrets_dir`; one section per file in a list; an `fsync` of the directory after a write;
+  on the class; `secrets_dir`; one section per file in a list; an `fsync` of the directory after a write;
   `keys = ` a function; "did you mean `max-size`?" for a field's Python name in a file.
 - **Not proposed / not answered**: a JSON Schema, interpolation, reloading, `include`, keeping comments when writing.
 - The open questions of the review above.
 
 ## Later
 
-- The static typing of `load` / `from_dict` beyond 7 (a plugin), if a and b are not enough.
+- ~~The static typing of `load` / `from_dict` beyond 7 (a plugin)~~: not needed since `Config` (2026-11-17).
 - enforced: the `date` plan; then cfgcast's tests for it (in that plan).

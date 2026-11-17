@@ -1,29 +1,27 @@
 # cfgcast
 
-Typed configuration files for Python 3.13+. Write your configuration as a class, and `cfgcast`
-loads JSON, TOML, ini/cfg or YAML into it: every value checked and converted, every problem
+Typed configuration files for Python 3.13+. Write your configuration as a class below `Config`, and
+`cfgcast` loads JSON, TOML, ini/cfg or YAML into it: every value checked and converted, every problem
 reported at once with the file and key it came from.
 
 Built on [enforced](https://github.com/CSynodinos/enforced) ([PyPI](https://pypi.org/project/enforced/)). MIT licensed.
 
 ```python
 from enforced.data_types import Port, SecretStr
-from cfgcast import cfg, field, load_cfg
+from cfgcast import Config, field
 
-@cfg
-class Database:
+class Database(Config):
     host: str
     port: Port = 5432
     password: SecretStr
 
-@cfg
-class App:
+class App(Config):
     name: str
-    db: Database                     # a section: another @cfg class
+    db: Database                     # a section: another configuration
     debug: bool = False
     hosts: list[str] = field(default_factory = list)
 
-app = load_cfg("app.toml", App)
+app = App.load("app.toml")
 ```
 
 ```toml
@@ -46,19 +44,19 @@ App(name='shop', debug=True, hosts=[], db=Database(host='db.internal', port=Port
 ## Why
 
 - **A configuration is a plain dataclass.** Frozen and keyword-only, with `==`, `repr`, pickling,
-  `dataclasses.replace` and everything else a dataclass has. No base class, no model to learn.
+  `dataclasses.replace` and everything else a dataclass has, and a type checker sees all of it. `Config`
+  adds `load` and `from_dict`, and nothing else to learn.
 - **Safe by default.** Unknown keys are refused (a typo like `debgu = true` never silently falls back
   to the default), loaded configurations can't be changed, and a secret never shows in a message.
 - **Every problem at once**, each with its file, line and key path (`app.toml:12: db.port: ...`).
 - **The formats are done properly**: YAML's `no` stays the string `"no"`, ini gets nesting and lists,
   and what is written is quoted so that any reader gets the same values back.
-- **Writing, with checked overrides**: make variants of a configuration for a workflow without
-  touching the original.
-- **Layers and the environment**: `load_cfg(["base.toml", "prod.toml"], App, env_prefix = "APP_")`, a `.env`
+- **Writing**: any configuration to any format, whole or not at all, read back as it was.
+- **Layers and the environment**: `App.load(["base.toml", "prod.toml"], env_prefix = "APP_")`, a `.env`
   file, secrets from files, overrides from the command line: every problem still names the file or
   variable its value came from, and `sources_of(app)` says it for every value.
 - **A template of the schema**: `write_template(App, "app.toml")`, every key with its default, type and doc.
-- **No dependency** besides enforced and clitint (colours); PyYAML only if you read YAML.
+- **Few dependencies**: enforced, clitint (colours) and tomli-w (TOML values); PyYAML only for YAML.
 
 ## Install
 
@@ -79,32 +77,30 @@ pip install "cfgcast[yaml]"    # and YAML (PyYAML)
 The format comes from the suffix (in any case: `APP.JSON` is JSON). For any other name, say it:
 
 ```python
-app = load_cfg("settings.conf", App, "toml")       # or cfg_type = "toml"
+app = App.load("settings.conf", "toml")       # or cfg_type = "toml"
 ```
 
 ## Writing a schema
 
-`@cfg` makes a class a schema. Each annotated attribute is a key, its type says what the value must
-be, and a default makes the key optional.
+A class below `Config` is a schema. Each annotated attribute is a key, its type says what the value must
+be, and a default makes the key optional. Options are class keywords.
 
 ```python
-@cfg                                   # strict = True, frozen = True
-class Server:
+class Server(Config):
     host: str = "0.0.0.0"
     port: Port = 8080
     workers: int = 4
     tags: list[str] = field(default_factory = list)   # a mutable default needs default_factory
     tls: Tls | None = None                            # an optional section
 
-@cfg(strict = False, frozen = False)
-class Lenient:
+class Lenient(Config, strict = False, frozen = False):
     ...
 ```
 
 | option | default | |
 |---|---|---|
 | `strict` | `True` | refuse keys the schema doesn't name. `False` ignores them, here and in every section below, with a warning: an older program reading a newer file |
-| `frozen` | `True` | a loaded configuration can't be changed (`FrozenInstanceError`) |
+| `frozen` | `True` | a loaded configuration can't be changed (`FrozenConfigError`: see [Frozen](#frozen)) |
 | `env_prefix` | `None` | read environment variables with this prefix whenever the class is loaded: see [Environment variables](#environment-variables) |
 | `keys` | `None` | `"kebab-case"`: a field `max_size` is the key `max-size` in a file: see [Keys that aren't Python names](#keys-that-arent-python-names) |
 
@@ -123,24 +119,56 @@ Any type enforced checks works in a schema: `Literal["DEBUG", "INFO"]`, `Annotat
 enums, `Path`, `Decimal`, `datetime`, and enforced's validated types (`Port`, `Url`, `Email`,
 `SecretStr`, `PhoneNumber`, `Probability` ...).
 
-A field whose type is another `@cfg` class is a **section** (a table in TOML, a nested object in JSON
+A field whose type is another configuration is a **section** (a table in TOML, a nested object in JSON
 and YAML, a `[section]` in ini). Sections may be written in any order in the module.
 
 ### Lists and dictionaries of sections
 
 ```python
-@cfg
-class App:
+class App(Config):
     servers: list[Server]              # TOML [[servers]]; a list of objects in JSON and YAML
     by_region: dict[str, Server]       # [by_region.eu] in TOML and ini; {"eu": {...}} in JSON and YAML
 ```
 
-`list[X]`, `tuple[X, ...]` and `dict[str, X]`, `X` a `@cfg` class, are built item by item, each one
+`list[X]`, `tuple[X, ...]` and `dict[str, X]`, `X` a configuration, are built item by item, each one
 checked like any section (unknown and missing keys too). A problem says which item: `servers[2].port`,
 `by_region.eu.host`. ini holds a dictionary of sections (`[by_region.eu]`) but not a list of them: see [ini](#ini).
 
-**Not inheritable.** A configuration is a class of its own: `class Prod(App)` is refused. Use a
-section, or a second schema.
+### Frozen
+
+A configuration is frozen unless its class says `frozen = False`. An assignment to it, or a `del`, raises a
+`FrozenConfigError`, which names the class and the key and never the value:
+
+```text
+FrozenConfigError: Database is frozen: db.password can't be assigned (dataclasses.replace makes a changed copy; frozen = False on the class allows it)
+```
+
+- It is a `dataclasses.FrozenInstanceError`, so an `AttributeError`: code that catches either catches it.
+- A section of a loaded configuration says its whole key path (`db.password`, `servers[1].port`); one built in
+  code says its key alone.
+- `dataclasses.replace(app, debug = True)` makes a changed copy, checked like any construction.
+
+### A class below a configuration
+
+```python
+class App(Config, strict = False, env_prefix = "APP_"):
+    name: str
+    db: Database
+
+class Prod(App):                       # a configuration too: App's fields, options and sections, and its own
+    replicas: int = 3
+    name: str = "shop"                 # a field again: here with a default
+
+prod = Prod.load("prod.toml")          # a Prod
+```
+
+- **Fields are inherited** as in a dataclass, in their order, and a field written again keeps its place
+  and takes its new type or default. Every field is checked, the ones above too.
+- **`strict`, `env_prefix` and `keys` are inherited**; a class says its own to change them
+  (`class Plain(App, strict = True)`). `keys` holds for the fields above too: they are this class's fields.
+- **`frozen` is said by each class**: a class below a frozen one is frozen, and one below a class that
+  isn't says `frozen = False` (a `TypeError` otherwise, and a checker flags it too).
+- Two fields with one key are refused, the ones above included.
 
 ### `field`: a key and a doc
 
@@ -148,10 +176,9 @@ section, or a second schema.
 `dataclasses.field` keeps working: this one is needed only for them.
 
 ```python
-from cfgcast import cfg, field
+from cfgcast import Config, field
 
-@cfg
-class Pool:
+class Pool(Config):
     max_size: int = field(default = 10, key = "max-size", doc = "connections at most")
     class_: str = field(default = "small", key = "class")
 ```
@@ -167,50 +194,33 @@ class Pool:
 per field (`field(key = "max-size")`), or for a whole class:
 
 ```python
-@cfg(keys = "kebab-case")              # max_size is the key max-size, class_ is class
-class Pool:
+class Pool(Config, keys = "kebab-case"):
     max_size: int = 10
     class_: str = "small"
 ```
 
 - **The key is what a file has**, and everything about a file uses it: unknown and missing keys, `loc` and
-  the message, `write`, `to_dict` and `from_dict` (so `from_dict(App, to_dict(app)) == app`). The attribute
+  the message, `write`, `to_dict` and `from_dict` (so `App.from_dict(to_dict(app)) == app`). The attribute
   keeps its Python name: `pool.max_size`.
 - The field's name is no key any more: `max_size = 10` in a file is an unknown key.
 - `keys = "kebab-case"` holds for its class only: a section says its own. A field's `key` wins over it.
 - An environment variable can't hold a `-`: `APP_POOL__MAX_SIZE` is `pool.max-size`.
-- Two fields with one key are refused at the decorator (`TypeError`).
+- Two fields with one key are refused at the class statement (`TypeError`).
 
 ## Loading
 
 ```python
-app = load_cfg("app.toml", App)           # the way to load
-app = App.load("app.toml")                # the same, as a member
+app = App.load("app.toml")
 app = App.from_dict({"name": "shop", "db": {...}})   # from a dictionary you already have
 ```
 
-`App.load` and `App.from_dict` are added by `@cfg` when the program runs, and a type checker (mypy,
-pyright, an editor) can't see members a decorator adds: it flags `App.load(...)` as an unknown attribute.
-They work as written. Two ways to have the checker's help:
-
-```python
-from cfgcast import Loadable, cfg, from_dict, load_cfg
-
-app = load_cfg("app.toml", App)           # the functions are fully typed: an App
-app = from_dict(App, {"name": "shop"})
-
-@cfg
-class App(Loadable):                      # or name Loadable as the base: App.load and App.from_dict are seen
-    name: str
-```
-
-`Loadable` is for checkers only: it is no configuration (a `@cfg` class still can't derive from another),
-and a class is one only with `@cfg`.
+Both are members of `Config`, so a type checker (mypy, pyright, an editor) knows them, and knows that
+`App.load` gives an `App` and `Prod.load` a `Prod`. A field can't be named `load` or `from_dict`.
 
 ### Several files, in layers
 
 ```python
-app = load_cfg(["base.toml", "prod.yaml", "local.ini"], App)      # also App.load([...])
+app = App.load(["base.toml", "prod.yaml", "local.ini"])
 ```
 
 - **The later file wins.** Sections merge key by key; any other value is replaced, **a list included**
@@ -222,9 +232,9 @@ app = load_cfg(["base.toml", "prod.yaml", "local.ini"], App)      # also App.loa
 - Every file must exist: a missing one is a `FileNotFoundError`. **Unless it is marked**:
 
 ```python
-from cfgcast import load_cfg, optional
+from cfgcast import optional
 
-app = load_cfg(["base.toml", "prod.toml", optional("local.toml")], App)
+app = App.load(["base.toml", "prod.toml", optional("local.toml")])
 ```
 
 `optional` is about being there and nothing else: a `local.toml` that is there is read like any file, and
@@ -235,8 +245,8 @@ defaults without anyone knowing.
 ### Environment variables
 
 ```python
-app = load_cfg("app.toml", App, env_prefix = "APP_")      # APP_DB__PORT=9090 is db.port
-app = load_cfg([], App, env_prefix = "APP_")              # the environment alone
+app = App.load("app.toml", env_prefix = "APP_")      # APP_DB__PORT=9090 is db.port
+app = App.load([], env_prefix = "APP_")              # the environment alone
 ```
 
 - The prefix is taken off, `__` goes between levels, and names match fields without regard to case:
@@ -251,14 +261,14 @@ app = load_cfg([], App, env_prefix = "APP_")              # the environment alon
 - A problem names the variable: `APP_DB__PORT: db.port: ...`.
 - `env = {...}` hands the variables in place of `os.environ` (a test, a workflow); `env = {}` reads none.
 
-**The prefix on the class**: `@cfg(env_prefix = "APP_")` reads the variables whenever that class is loaded
-(`load_cfg`, `App.load`), without saying so at each call. A prefix given to the call wins. Only the class
+**The prefix on the class**: `class App(Config, env_prefix = "APP_")` reads the variables whenever that class
+is loaded, without saying so at each call. A prefix given to the call wins. Only the class
 that is loaded counts, not a section's, and `from_dict` reads no variables.
 
 **A `.env` file**:
 
 ```python
-app = load_cfg("app.toml", App, env_prefix = "APP_", env_file = ".env")     # or optional(".env")
+app = App.load("app.toml", env_prefix = "APP_", env_file = ".env")     # or optional(".env")
 ```
 
 - Read with the prefix like the environment, **over the files and under the environment**: a variable of
@@ -285,7 +295,7 @@ APP_DB__PASSWORD_FILE=/run/secrets/db_password
 ### A section of a bigger file
 
 ```python
-app = load_cfg("pyproject.toml", App, section = "tool.myapp")     # the table [tool.myapp]
+app = App.load("pyproject.toml", section = "tool.myapp")     # the table [tool.myapp]
 ```
 
 - Dots between levels, or a list of keys where a key has a dot (`["tool", "my.app"]`). The rest of the file
@@ -298,10 +308,10 @@ app = load_cfg("pyproject.toml", App, section = "tool.myapp")     # the table [t
 
 ```python
 import sys
-from cfgcast import load_cfg, parse_overrides
+from cfgcast import parse_overrides
 
-app = load_cfg("app.toml", App, overrides = {"db": {"port": 9090}})                # from code
-app = load_cfg("app.toml", App, overrides = parse_overrides(sys.argv[1:], App))   # python run.py db.port=9090 debug=true
+app = App.load("app.toml", overrides = {"db": {"port": 9090}})                # from code
+app = App.load("app.toml", overrides = parse_overrides(sys.argv[1:], App))   # python run.py db.port=9090 debug=true
 ```
 
 - **Over everything**: the files, then the `.env` file, then the environment, then the overrides.
@@ -313,7 +323,7 @@ app = load_cfg("app.toml", App, overrides = parse_overrides(sys.argv[1:], App)) 
 
 ## When something is wrong
 
-`load_cfg` raises a `ConfigError` with every problem in the file:
+`App.load` raises a `ConfigError` with every problem in the file:
 
 ```toml
 # bad.toml
@@ -360,7 +370,7 @@ The same as data, in pydantic's shape, for a log or an API response:
   with `**********` in the message, and can't know of any other.
 - `ConfigError` is an `enforced.InvalidDataError` and a `ValueError`: catch whichever you already catch.
 - **A configuration built or changed in code raises a `ConfigError` too**: `App(name = 1)`, or
-  `app.name = 1` on a `@cfg(frozen = False)` class. There is no file then: `error.file` is `None`, and `loc`
+  `app.name = 1` on a class with `frozen = False`. There is no file then: `error.file` is `None`, and `loc`
   starts with the field (`["name"]`). Secrets are masked the same way.
 
 With several files or environment variables, each problem starts with where its value came from, and
@@ -378,8 +388,7 @@ one text. A `ConfigWarning` names the file of each ignored key the same way.
 
 ### Unknown keys under `strict = False`
 
-`strict = False` holds for the class it is written on and every section below it, also one with a plain
-`@cfg`. A section can loosen itself under a strict class, but can't tighten what is above it. The ignored
+`strict = False` holds for the class it is written on and every section below it, also a strict one. A section can loosen itself under a strict class, but can't tighten what is above it. The ignored
 keys are named in one `ConfigWarning`, so that a typo doesn't quietly leave you on a default:
 
 ```text
@@ -389,13 +398,13 @@ ConfigWarning: 2 unknown keys ignored in new.toml for App (/home/me/shop/config.
 ```
 
 ```python
-app = load_cfg("new.toml", App, show_warnings = False)      # also App.load and App.from_dict
+warnings.filterwarnings("ignore", category = ConfigWarning)     # to leave it out
 ```
 
-- After the class comes where it is written (`file:line`, the decorator's line, which an editor opens with a click), left out when
+- After the class comes where it is written (`file:line`, the line of its class statement, which an editor opens with a click), left out when
   Python can't tell (a class made in a REPL or with `type()`).
 - It names keys and never values. `warning.errors()` has them in the shape above, without `input`.
-- It points at the line that called `load_cfg`, and comes before a `ConfigError` for the same file.
+- It points at the line that called `load` or `from_dict`, and comes before a `ConfigError` for the same file.
 - To make it an error in CI: `pytest -W error::cfgcast.ConfigWarning`, or `warnings.filterwarnings("error", category = ConfigWarning)`
   in your code. `python -W` can't name it: Python reads that option before it can import an installed package.
 
@@ -403,7 +412,7 @@ app = load_cfg("new.toml", App, show_warnings = False)      # also App.load and 
 
 ```python
 >>> from cfgcast import sources_of
->>> app = load_cfg(["base.toml", "prod.yaml"], App, env_prefix = "APP_", overrides = {"debug": True})
+>>> app = App.load(["base.toml", "prod.yaml"], env_prefix = "APP_", overrides = {"debug": True})
 >>> sources_of(app)
 {'name': 'base.toml:1', 'db.host': 'prod.yaml:3', 'db.port': 'APP_DB__PORT', 'debug': 'overrides', 'hosts': '(default)'}
 ```
@@ -421,9 +430,9 @@ A file that isn't valid in its format raises what its parser raises (`json.JSOND
 ## Writing
 
 ```python
-from cfgcast import write, to_dict
+from cfgcast import write
 
-write(app, "prod.yaml", {"db": {"host": "db.prod"}, "debug": False})
+write(app, "prod.yaml")
 ```
 
 ```yaml
@@ -437,10 +446,9 @@ db:
   password: s3cret
 ```
 
-- **Overrides go to the file only.** They are checked against the schema like a loaded file (wrong
-  values and unknown keys raise a `ConfigError`, and nothing is written), and `app` is never changed.
-  Under `strict = False` an unknown key is left out of the file and always gives a `ConfigWarning`.
-  Nested keys are nested dictionaries, merged section by section.
+- **To write other values, make the configuration that has them**, checked as every one is:
+  `App.load("app.toml", overrides = {"db": {"host": "db.prod"}})`, `dataclasses.replace(app, debug = False)`,
+  or `App.from_dict(...)`. `write` writes the object it is given.
 - **Any object, any format**: load YAML, write ini. The format comes from the suffix, or `cfg_type`.
 - **Every key is written**, also one equal to its default: the file means the same if a default in
   the code changes later, so a run can be repeated from its file.
@@ -469,7 +477,7 @@ json.dumps(to_dict(app, plain = True))  # a log, a response, a database column
 
 - **`to_text(app, cfg_type = "json")`** is the text `write` would write, with one difference: **a
   `SecretStr` is `**********`**, unless `reveal_secrets = True`. Text is printed, logged and sent; a file is
-  where secrets go. It takes `overrides` as `write` does.
+  where secrets go.
 - **`to_dict(app)`** gives the values as they are, sections as nested dictionaries. Secrets stay `SecretStr`
   (masked when printed); lists and dictionaries are copies.
 - **`to_dict(app, plain = True)`** gives only what JSON holds: a path, a `Decimal`, a `UUID`, a date and a
@@ -562,8 +570,9 @@ data. A dictionary of sections is fine: `[by_region.eu]`.
 
 Read with **YAML 1.2 booleans**: only `true` / `false` are booleans. In YAML 1.1, which PyYAML follows,
 `no`, `yes`, `on` and `off` are booleans too, so `country: no` (Norway) became `False`. Here it stays
-`"no"`, and a `bool` field still takes `yes` and `on` through conversion. When writing, any string a
-YAML 1.1 or 1.2 reader would take for something else (`no`, `08`, `1e3`, `null`, `~`, `=` ...) is quoted.
+`"no"`, and a `bool` field still takes `yes` and `on` through conversion. When writing (by PyYAML,
+needed to write YAML as to read it), any string a YAML 1.1 or 1.2 reader would take for something else
+(`no`, `08`, `1e3`, `null`, `~`, `=` ...) is quoted.
 An unquoted `2026-10-17` is a date, and a `datetime` field takes it as that day's midnight.
 
 ### TOML
