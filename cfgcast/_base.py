@@ -33,7 +33,7 @@ A field whose type is another configuration is a nested section / table: the bui
 makes it from the sub-dictionary. enforced checks the leaves; it does not turn a dict into a class.
 """
 from ._errors import ConfigError, FrozenConfigError, _where
-from ._sources import SOURCES_ATTR, OptionalFile
+from ._sources import OptionalFile, loaded_from
 from ._readers import CONFIG_READERS, CfgType, RawConfigData
 from ._writers import TEXTS, WRITERS, plain_json
 from ._template import save_template
@@ -354,7 +354,7 @@ def sources_of(obj: object) -> dict[str, str]:
     #* Ensure the object is a loaded configuration instance.
     if isinstance(obj, type) or not is_config(obj):
         raise TypeError(f"sources_of takes a configuration (an instance of a class below Config), got {obj!r}")
-    source_data = vars(obj).get(SOURCES_ATTR)
+    source_data = loaded_from(obj)
     if source_data is None:
         raise ValueError(
             f"sources_of: this {type(obj).__name__} was not loaded (it was constructed directly, or is a default): "
@@ -457,8 +457,8 @@ def _as_dict(obj: Any) -> dict[str, Any]:
 
 @enforced.dispatch
 def _copy_node(node) -> Any:
-    """Recursively copy a configuration node, converting configuration instances to dictionaries."""
-    if is_dataclass(node) and not isinstance(node, type) and is_config(node):   # Special case, a configuration instance: convert to dictionary
+    """Recursively copy a configuration node, converting sections to dictionaries."""
+    if is_dataclass(node) and not isinstance(node, type):          # a section: a configuration, or any dataclass, as build takes them
         return _as_dict(node)
     else:
         return node
@@ -616,7 +616,7 @@ def _frozen_message(obj: Any, name: str, done: str) -> str:
     cls = type(obj)
     by_name = {field_.name: field_ for field_ in fields(cls)}
     key = key_of(cls, by_name[name]) if name in by_name else name
-    noted = vars(obj).get(SOURCES_ATTR)
+    noted = loaded_from(obj)
     where = _where((*noted[1], key) if noted else (key,), False)
     return (
         f"{formatter(cls.__name__, "bold_yellow")} is {formatter('frozen', 'bold')}: {where} can't be {done} "
@@ -649,7 +649,7 @@ class _Sections:
         hints = get_type_hints(owner, include_extras = True)
         for field_ in fields(owner):
             found = section_of(hints.get(field_.name))
-            if found is not None and is_config(found[1]):
+            if found is not None:                                  # any dataclass, as build and the template take it
                 kind, section = found
                 sections[key_of(owner, field_)] = {
                     "one": section,

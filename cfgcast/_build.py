@@ -14,27 +14,32 @@ any level. What that ignores is gathered too, and said in one `ConfigWarning`.
 """
 from dataclasses import MISSING, dataclass, field as _field, is_dataclass
 from types import NoneType
-from typing import Any, get_type_hints
-from enforced import InvalidDataError
+from typing import Any, Sequence, get_type_hints
+from enforced import InvalidDataError, validate_function
 from enforced.data_types import SecretStr
 import os
 import warnings
 from ._errors import MASK, ConfigError, ConfigWarning, Problem
-from ._hints import SectionKind, members as _members, mentions_secret as _mentions_secret, keys_of as _keys_of, options_of as _options, section_of as _section_of
-from ._sources import SOURCES_ATTR, Path, Sources
+from ._hints import OPTIONS_ATTR, SectionKind, members as _members, mentions_secret as _mentions_secret, keys_of as _keys_of, options_of as _options, section_of as _section_of
+from ._sources import Path, Sources, note_loaded
+
+#* What a `post_init` problem says in place of an exception's text that holds a secret.
+SECRET_IN_TEXT = "(its text is left out: it holds a secret)"
 
 _OUR_FILES = (os.path.dirname(os.path.abspath(__file__)) + os.sep,)
 
 
-def build[T](schema: type[T], data: dict[str, Any], file: str | Sources) -> T:
+def build[T](schema: type[T], data: dict[str, Any], file: str | Sources, found: Sequence[Problem] = ()) -> T:
     """
     `schema` from `data`; a `ConfigError` with all of `problems_of` if there are any. Unknown keys that
     were ignored are warned about first, also when an error follows: `prot` ignored explains `port` missing.
-    `file` is the one file the data came from, or the `Sources` of a load from several.
+    `file` is the one file the data came from, or the `Sources` of a load from several. `found`: problems
+    the load met before the build (a file without its section), said first, with the rest.
     """
     sources = file if isinstance(file, Sources) else Sources((str(file),))
     run = _Run(sources)
     built, problems = _build(schema, data, (), False, run)
+    problems = [*found, *problems]
     if run.ignored:
         #* skip_file_prefixes: the warning points at the caller's line, whichever way in was taken.
         warnings.warn(ConfigWarning(sources.names, schema, run.ignored), skip_file_prefixes = _OUR_FILES)
@@ -93,6 +98,10 @@ def _build(schema: type, data: Any, path: Path, lenient: bool, run: _Run) -> tup
         if _mentions_secret(hint):
             secret.add(name)
         found = _section_of(hint)
+        if found is not None and found[0] == "one" and value is None and not _optional(hint):
+            #* A section with nothing below it (YAML `db:` with every key commented out) is empty, not null:
+            #* its own missing keys are said, or its defaults taken.
+            value = {}
         if found is not None and not (value is None and _optional(hint)):
             built, below = _sections(found[0], found[1], value, here, not strict, run)
             if below:
@@ -111,7 +120,7 @@ def _build(schema: type, data: Any, path: Path, lenient: bool, run: _Run) -> tup
             sources.defaults.add((*path, key))
 
     try:
-        instance = schema(**arguments)
+        instance = _construct(schema, arguments)
     except InvalidDataError as error:
         for entry in error.errors():
             if entry["type"] == "missing":                          # said above, or a section that failed below
@@ -123,19 +132,37 @@ def _build(schema: type, data: Any, path: Path, lenient: bool, run: _Run) -> tup
             problems.append(sources.placed(entry, (*path, *inner)))
         return None, problems
     except Exception as error:                                      # a __post_init__ that raised: not BaseException (Ctrl-C goes through)
-        run.raised.append(error)
-        #* No "input": the exception is about the whole section, which may hold its secrets. The text is
-        #* the user's own: the secrets this level knows are taken out of it.
-        text = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
-        for known in sorted(_secret_texts(arguments, secret), key = len, reverse = True):
-            text = text.replace(known, MASK)
+        #* No "input": the exception is about the whole section, which may hold its secrets. The text is the
+        #* user's own: where it holds the text of a secret this level knows, all of it is left out. Not the
+        #* secret alone: what is around a mask tells it (`re**********lica` is the secret `p`). Nor is that
+        #* exception the cause: a traceback would print its text.
+        message = str(error)
+        if any(known in message for known in _secret_texts(arguments, secret)):
+            message = SECRET_IN_TEXT
+        else:
+            run.raised.append(error)
+        text = f"{type(error).__name__}: {message}" if message else type(error).__name__
         problems.append(sources.problem("post_init", path, text, {"schema": schema.__name__, "exception": type(error).__name__}))
         return None, problems
     if problems:
         return None, problems
-    #* For sources_of: where this instance was built from. Not a field: equality, repr and to_dict don't see it.
-    object.__setattr__(instance, SOURCES_ATTR, (sources, path))
+    #* For sources_of: where this instance was built from. Kept beside it, not on it (`_sources._LOADED`).
+    note_loaded(instance, sources, path)
     return instance, []
+
+
+def _construct(schema: type, arguments: dict[str, Any]) -> Any:
+    """
+    The instance, every value checked and converted. A configuration checks itself (`enforced.dataclass`); a
+    plain dataclass used as a section doesn't, so its `__init__` is called through enforced, with the same
+    `coerce` and `deep`: what a section holds is checked whichever kind of class it is.
+    """
+    if OPTIONS_ATTR in vars(schema):
+        return schema(**arguments)
+    made: Any = schema                                              # a dataclass: its __new__ is object's, its __init__ the fields'
+    instance = made.__new__(made)
+    validate_function(made.__init__, (instance,), arguments, coerce = True, deep = True)
+    return instance
 
 
 def _secret_texts(arguments: dict[str, Any], secret: set[str]) -> set[str]:

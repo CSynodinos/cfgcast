@@ -184,7 +184,7 @@ def test_a_default_that_ini_cant_hold_is_left_to_the_default(tmp_path):
     assert Hosts.load(file) == Hosts()
 
 
-def test_a_yaml_section_with_nothing_to_read_yet_is_not_null(tmp_path):
+def test_a_yaml_section_with_nothing_to_read_yet_is_an_empty_section(tmp_path):
     pytest.importorskip("yaml")
 
     class Login(Config):
@@ -197,12 +197,11 @@ def test_a_yaml_section_with_nothing_to_read_yet_is_not_null(tmp_path):
     file = tmp_path / "both.yaml"
     write_template(Both, file)
     text = file.read_text()
-    assert "\n#given:\n" in text                                   # it has a default: left out is the same
-    assert "# remove the {} when a key below is filled in\nasked: {}\n" in text
+    assert "\ngiven:\n" in text and "\nasked:\n" in text and "{}" not in text       # null to YAML: an empty section to cfgcast
     assert Both.load(file) == Both(asked = Login())
 
 
-def test_a_yaml_section_of_required_keys_is_commented_out_whole_and_put_back_with_them(tmp_path):
+def test_a_yaml_section_of_required_keys_is_written_and_its_keys_are_what_is_missing(tmp_path):
     pytest.importorskip("yaml")
 
     class Login(Config):
@@ -213,11 +212,11 @@ def test_a_yaml_section_of_required_keys_is_commented_out_whole_and_put_back_wit
 
     file = tmp_path / "holder.yaml"
     write_template(Holder, file)
-    assert "# required\n#server:\n\n  # required: str\n  #host: ''\n" in file.read_text()
+    assert "\nserver:\n\n  # required: str\n  #host: ''\n" in file.read_text()
     with pytest.raises(ConfigError) as caught:
         Holder.load(file)
-    assert [tuple(e["loc"][1:]) for e in caught.value.errors()] == [("server",)]
-    file.write_text(_uncommented(file.read_text(), "server", "host"))
+    assert [(e["type"], tuple(e["loc"][1:])) for e in caught.value.errors()] == [("missing", ("server", "host"))]
+    file.write_text(_uncommented(file.read_text(), "host"))
     assert Holder.load(file) == Holder(server = Login(host = ""))
 
 
@@ -268,3 +267,36 @@ def test_only_a_configuration_class_has_a_template(tmp_path, bad):
 def test_overwrite_is_a_bool(tmp_path):
     with pytest.raises(TypeError, match = "overwrite"):
         write_template(App, tmp_path / "app.toml", overwrite = 1)   # type: ignore[arg-type]
+
+
+def test_a_file_made_just_before_the_write_is_kept(tmp_path, monkeypatch):
+    #* No look first: a file made between a look and the write was replaced. The name is taken by an exclusive create.
+    file = tmp_path / "app.toml"
+    file.write_text("name = 'mine'\n")
+    monkeypatch.setattr("os.path.lexists", lambda path: False)       # as a look would have seen it a moment earlier
+    with pytest.raises(FileExistsError, match = "overwrite = True"):
+        write_template(App, file)
+    assert file.read_text() == "name = 'mine'\n"
+
+
+def test_a_template_that_fails_to_be_written_leaves_no_file(tmp_path, monkeypatch):
+    import cfgcast._writers
+
+    def broken(file, encoded):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cfgcast._writers, "_replace", broken)
+    with pytest.raises(OSError, match = "disk full"):
+        write_template(App, tmp_path / "app.toml")
+    assert list(tmp_path.iterdir()) == []                            # the name it took is given back
+
+
+def test_a_dangling_link_or_a_directory_is_not_written_through(tmp_path):
+    link = tmp_path / "link.toml"
+    link.symlink_to(tmp_path / "nowhere.toml")
+    with pytest.raises(FileExistsError):
+        write_template(App, link)
+    assert not (tmp_path / "nowhere.toml").exists()
+    (tmp_path / "dir.toml").mkdir()
+    with pytest.raises(FileExistsError):
+        write_template(App, tmp_path / "dir.toml")

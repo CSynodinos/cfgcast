@@ -353,5 +353,21 @@ def test_what_is_kept_for_sources_of_changes_nothing_else(tmp_path):
 
     loaded = Db.from_dict({"host": "h"})
     assert loaded == Db(host = "h") and repr(loaded) == repr(Db(host = "h")) and hash(loaded) == hash(Db(host = "h"))
+    assert sources_of(loaded) == {"host": "<dict>", "port": "(default)", "password": "(default)"}
+    assert vars(loaded) == vars(Db(host = "h"))                        # nothing of it on the instance
     again = pickle.loads(pickle.dumps(loaded))
-    assert again == loaded and sources_of(again) == sources_of(loaded) == {"host": "<dict>", "port": "(default)", "password": "(default)"}
+    assert again == loaded and "__cfg_sources__" not in pickle.dumps(loaded).decode("latin-1")
+    with pytest.raises(ValueError, match = "was not loaded"):        # a copy is not what was loaded
+        sources_of(again)
+
+
+def test_what_was_kept_goes_with_its_instance():
+    import gc
+    from cfgcast._sources import _LOADED
+
+    loaded = Db.from_dict({"host": "h"})
+    key = id(loaded)
+    assert _LOADED[key][0]() is loaded
+    del loaded
+    gc.collect()
+    assert key not in _LOADED

@@ -71,12 +71,13 @@ def template_text(schema: type, cfg_type: CfgType) -> str:
 def save_template(schema: type, file: str | os.PathLike[str], cfg_type: CfgType, overwrite: bool) -> None:
     """`template_text` as the whole of `file`; a file that is there is kept (`FileExistsError`) unless `overwrite`."""
     text = template_text(schema, cfg_type)                          # made in full first: a refusal writes nothing
-    if not overwrite and os.path.lexists(file):
+    try:
+        _save(file, text, new = not overwrite)                      # not a look, then a write: a file made between the two would be lost
+    except FileExistsError:
         raise FileExistsError(
             f"{os.fspath(file)} exists: a template written over a configuration would lose it "
             f"(overwrite = True to replace it)"
-            )
-    _save(file, text)
+            ) from None
 
 
 # ── the tree ────────────────────────────────────────────────────────────────
@@ -214,15 +215,6 @@ def _placeholder(hint: Any) -> Any:
     return ""
 
 
-def _has_active(items: list[_Item]) -> bool:
-    return any(item.active and (isinstance(item, _Value) or _has_active(item.items) or not item.items) for item in items)
-
-
-def _has_required(items: list[_Item]) -> bool:
-    """Whether a key here must be given once this level is: a required value, or one in a section that is written."""
-    return any(item.required if isinstance(item, _Value) else item.kind == "one" and item.active and _has_required(item.items) for item in items)
-
-
 # ── the formats ─────────────────────────────────────────────────────────────
 
 class _Lines(list[str]):
@@ -329,18 +321,7 @@ def _yaml(lines: _Lines, items: list[_Item], indent: int = 0, commented: bool = 
             lines.append(f"{pad}  #{'-' if item.kind == 'list' else _yaml_key(EXAMPLE) + ':'}")
             deeper = indent + 4
         else:
-            if not off and not _has_active(item.items):
-                #* Nothing below is read yet, and a key with nothing below it is null to YAML, not a section.
-                if not item.items or (item.required and not _has_required(item.items)):
-                    head += " {}"
-                    if item.items:
-                        notes.append("remove the {} when a key below is filled in")
-                else:
-                    #* Left out, a section with a default is that default: the same. A required one has
-                    #* required keys below: it is put back with them.
-                    off = True
-                    if item.required:
-                        notes.append("required")
+            #* A section with nothing active below it is null to YAML: loading takes that as an empty section.
             _block(lines, notes, [head], off, pad, apart = True)
         _yaml(lines, item.items, deeper, off)
         lines.noted = True                                          # what follows a section stands apart from it

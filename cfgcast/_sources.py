@@ -22,15 +22,38 @@ from ._readers import RawConfigData
 import json
 import os
 import re
+import weakref
 
 type Path = tuple[Any, ...]
 #* {"type", "loc", "msg", "input", "ctx"}: `_errors.Problem` (this module is below it).
 type Problem = dict[str, Any]
 
-SOURCES_ATTR = "__cfg_sources__"                                   # on a built instance: (its Sources, its key path)
 DEFAULT = "(default)"                                               # the source of a value no source gave
 OVERRIDES = "overrides"                                             # the source of what `load(overrides = ...)` gave
 NO_FILE = "(no file)"                                               # the source of a load that read nothing
+
+#* Where each instance a build made came from, (its Sources, its key path), by the instance's id. Not on the
+#* instance: `vars(app)` doesn't show it, and a copy or an unpickled one is not what was loaded. A weak reference
+#* takes the entry out when the instance goes, before its id can be another's.
+_LOADED: dict[int, tuple[weakref.ref[Any], "Sources", Path]] = {}
+
+
+def note_loaded(instance: Any, sources: "Sources", path: Path) -> None:
+    """Keep where `instance` was built from, for `sources_of`, as long as it lives."""
+    key = id(instance)
+
+    def gone(_: weakref.ref[Any]) -> None:
+        _LOADED.pop(key, None)
+
+    _LOADED[key] = (weakref.ref(instance, gone), sources, path)
+
+
+def loaded_from(instance: Any) -> tuple["Sources", Path] | None:
+    """`(Sources, key path)` of an instance a build made, None for any other."""
+    entry = _LOADED.get(id(instance))
+    if entry is None or entry[0]() is not instance:
+        return None
+    return entry[1], entry[2]
 
 
 class OptionalFile:

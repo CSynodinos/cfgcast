@@ -372,12 +372,27 @@ def test_the_first_exception_is_the_cause_and_the_top_level_is_the_whole_file():
     assert _error(Guarded, {"name": 1, "main": {"host": "h"}}).__cause__ is None
 
 
-def test_a_secret_in_the_text_of_an_exception_is_masked():
+def test_the_text_of_an_exception_that_holds_a_secret_is_left_out_whole():
     error = _error(Guarded, {"name": "n", "main": {"host": "bad", "password": "hunter2"}})
-    assert "hunter2" not in str(error) and "hunter2" not in error.json() and MASK in str(error)
+    assert error.errors()[0]["msg"] == "ValueError: (its text is left out: it holds a secret)"
+    assert "hunter2" not in str(error) + error.json() and "host may not" not in str(error)
     #* The class above knows the secrets of its sections too.
     error = _error(Guarded, {"name": "bad", "token": "t0ken", "main": {"host": "h", "password": "hunter2"}})
-    assert "hunter2" not in str(error) and "t0ken" not in str(error) and str(error).count(MASK) == 2
+    assert error.errors()[0]["msg"] == "LookupError: (its text is left out: it holds a secret)"
+
+
+def test_a_short_secret_is_not_told_by_what_is_around_it():
+    #* Masked where its letters stood, `p` would be read off `re**********lica`.
+    error = _error(Guarded, {"name": "n", "main": {"host": "bad", "password": "p"}})
+    assert error.errors()[0]["msg"] == "ValueError: (its text is left out: it holds a secret)" and MASK not in str(error)
+
+
+def test_an_exception_whose_text_holds_a_secret_is_not_the_cause():
+    import traceback
+    error = _error(Guarded, {"name": "n", "main": {"host": "bad", "password": "hunter2"}})
+    assert error.__cause__ is None and "hunter2" not in "".join(traceback.format_exception(error))
+    clean = _error(Guarded, {"name": "n", "main": {"host": "bad"}})            # an empty password: nothing to hide
+    assert isinstance(clean.__cause__, ValueError) and "host may not be 'bad'" in str(clean)
 
 
 def test_an_exception_without_text_and_one_that_is_no_exception():
@@ -389,3 +404,27 @@ def test_an_exception_without_text_and_one_that_is_no_exception():
 def test_a_direct_construction_raises_the_exception_as_it_is():
     with pytest.raises(ValueError, match = "host may not be 'bad'"):
         Checked(host = "bad")
+
+
+# ── a null where a section belongs ──────────────────────────────────────────
+
+class Inner(Config):
+    size: int = 1
+
+
+class Outer(Config):
+    inner: Inner
+    later: Inner | None = Inner(size = 2)
+
+
+def test_a_null_section_that_is_not_optional_is_an_empty_one():
+    assert build(Outer, {"inner": None}, "f").inner == Inner()                  # YAML `inner:` with nothing below it
+    assert build(Outer, {"inner": None, "later": None}, "f").later is None      # | None: null is None, as written
+
+
+def test_an_empty_section_still_says_its_missing_keys():
+    class Needs(Config):
+        server: Server
+
+    error = _error(Needs, {"server": None})
+    assert [(e["type"], e["loc"][1:]) for e in error.errors()] == [("missing", ["server", "host"])]

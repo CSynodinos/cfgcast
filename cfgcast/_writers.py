@@ -232,13 +232,32 @@ def _(node: date | time) -> str:
     return node.isoformat()
 
 
-def _save(file: str | os.PathLike[str], text: str) -> None:
+def _save(file: str | os.PathLike[str], text: str, *, new: bool = False) -> None:
     """
     `text` as the whole of `file`, or `file` as it was: written to a temporary file next to it, which
-    then takes its place (`os.replace`: the old file or the new one, never a mixture).
+    then takes its place (`os.replace`: the old file or the new one, never a mixture). With `new`, only
+    where there is no file: the name is taken first with an exclusive create (`FileExistsError` if anything
+    is there, also a file made a moment ago), so no file of someone else's is ever replaced.
     """
     #* The text is made in full, and encoded, before anything is opened: an error leaves no half-written file.
     encoded = text.encode("utf-8")
+    reserved = False
+    if new:
+        os.close(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))    # raises if the name is taken, a link too
+        reserved = True
+    try:
+        _replace(file, encoded)
+    except BaseException:
+        if reserved:                                                # the empty file this call made: nobody else's
+            try:
+                os.unlink(file)
+            except OSError:
+                pass
+        raise
+
+
+def _replace(file: str | os.PathLike[str], encoded: bytes) -> None:
+    """`encoded` in a temporary file next to `file`, which then takes its place."""
     target = os.path.realpath(file)                                 # a symbolic link stays one: what it points to is replaced
     if os.path.isdir(target):
         raise IsADirectoryError(f"{os.fspath(file)} is a directory: a configuration is written to a file")

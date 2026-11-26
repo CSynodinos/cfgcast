@@ -3,7 +3,7 @@ What an annotation says, asked the same way by every module: the members of a hi
 holds a secret, whether its field is a section (or a list / dictionary of sections) or a list.
 
 A section is any dataclass (a configuration is one): this module is below `_base`, and doesn't know
-`Config`. `_base._Sections` keeps the configurations only.
+`Config`. The rest of cfgcast takes a section the same way (`_build`, `to_dict`, `__cfg_sections__`, the template).
 """
 from types import UnionType
 from typing import Annotated, Any, Literal, NamedTuple, TypeAliasType, Union, get_args, get_origin, get_type_hints

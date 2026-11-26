@@ -1,4 +1,4 @@
-"""Overrides at load time: `(overrides = {...}).load(...)` and `parse_overrides`."""
+"""Overrides at load time: `App.load(..., overrides = {...})` and `parse_overrides`."""
 import pytest
 
 from enforced.data_types import Port, SecretStr

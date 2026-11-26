@@ -1,5 +1,5 @@
 """`Config.load`: read a file (or several, in layers, a `.env` file and the environment over them) and build the schema from it."""
-from ._errors import ConfigError, Problem
+from ._errors import Problem
 from ._readers import PARSERS, CfgType, RawConfigData, split_lists, text_of
 from ._base import SUFFIXES, File, _format_of, is_config
 from ._build import build
@@ -102,8 +102,6 @@ def load(
         names.append(OVERRIDES)
         layers.append((OVERRIDES, (), _copied(overrides), None))    # a copy: a layer is merged into, the caller's is not
 
-    if absent:
-        raise ConfigError(tuple(names), schema, absent)
     sources = Sources(tuple(names), within, file_names)
     sources.lines.update(lines)
     if last is not None:
@@ -113,7 +111,8 @@ def load(
         layer(merged, data, name, sources)
         if line is not None:
             sources.lines.setdefault(name, {})[path_] = line
-    return build(schema, merged, sources)
+    #* A file without the section is one problem among the others: the build goes on with the files that have it.
+    return build(schema, merged, sources, absent)
 
 
 def parse_overrides(arguments: Sequence[str], schema: type) -> dict[str, Any]:

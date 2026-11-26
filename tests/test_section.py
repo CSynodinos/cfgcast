@@ -1,7 +1,9 @@
-"""`(section = ...).load(...)`: a configuration that is one part of a bigger file."""
+"""`App.load(..., section = ...)`: a configuration that is one part of a bigger file."""
+import dataclasses
+
 import pytest
 
-from enforced.data_types import SecretStr
+from enforced.data_types import Port, SecretStr
 from cfgcast import Config, ConfigError, ConfigWarning, field, optional
 
 
@@ -76,9 +78,21 @@ def test_a_file_without_the_section_is_a_missing_problem(tmp_path):
     path.write_text('[tool.other]\nname = "secret-ish"\n')
     with pytest.raises(ConfigError) as caught:
         App.load(path, section = "tool.myapp")
-    assert caught.value.errors() == [
-        {"type": "missing", "loc": [str(path), "tool", "myapp"], "msg": "missing section", "ctx": {"schema": "App"}}]
-    assert "tool.myapp: missing section" in str(caught.value)
+    #* Gathered with the rest, first: the keys the schema needs are missing too.
+    errors = caught.value.errors(include_context = False)
+    assert errors[0] == {"type": "missing", "loc": [str(path), "tool", "myapp"], "msg": "missing section"}
+    assert [e["loc"][1:] for e in errors[1:]] == [["tool", "myapp", "name"]]
+    assert "tool.myapp: missing section" in str(caught.value) and "secret-ish" not in str(caught.value)
+
+
+def test_a_file_without_the_section_is_said_with_the_problems_of_the_others(tmp_path):
+    good, bare = tmp_path / "good.toml", tmp_path / "bare.toml"
+    good.write_text('[tool.myapp]\nname = "n"\n[tool.myapp.pool]\nsize = "many"\n')
+    bare.write_text('[tool.other]\nx = 1\n')
+    with pytest.raises(ConfigError) as caught:
+        App.load([good, bare], section = "tool.myapp")
+    assert [(e["type"], e["loc"]) for e in caught.value.errors()] == [
+        ("missing", [str(bare), "tool", "myapp"]), ("type", [str(good), "tool", "myapp", "pool", "size"])]
 
 
 def test_a_section_that_is_a_value_is_a_section_problem_without_its_value(tmp_path):
@@ -86,7 +100,7 @@ def test_a_section_that_is_a_value_is_a_section_problem_without_its_value(tmp_pa
     path.write_text('{"tool": "hunter2"}')
     with pytest.raises(ConfigError) as caught:
         App.load(path, section = "tool.myapp")
-    (problem,) = caught.value.errors()
+    problem = caught.value.errors()[0]
     assert problem["type"] == "section" and problem["loc"][1:] == ["tool"] and "input" not in problem
     assert "hunter2" not in str(caught.value) and "expected a section of keys, got str" in str(caught.value)
 
@@ -131,3 +145,55 @@ def test_a_section_that_is_no_path_of_keys_is_refused(tmp_path, bad):
     path.write_text("")
     with pytest.raises(TypeError, match = "section must be keys"):
         App.load(path, section = bad)
+
+
+# ── a plain dataclass as a section ──────────────────────────────────────────
+
+import dataclasses                                                   # noqa: E402
+
+
+@dataclasses.dataclass
+class PlainPool:
+    size: int = 1
+    hosts: list[str] = dataclasses.field(default_factory = list)
+
+
+class WithPlain(Config):
+    name: str
+    pool: PlainPool = dataclasses.field(default_factory = PlainPool)
+    pools: list[PlainPool] = dataclasses.field(default_factory = list)
+
+
+def test_a_plain_dataclass_is_a_section_everywhere(tmp_path):
+    from cfgcast import to_dict, write
+    from cfgcast._base import SECTIONS_ATTR
+
+    app = WithPlain.from_dict({"name": "n", "pool": {"size": "3", "hosts": ["a"]}, "pools": [{"size": 2}]})
+    assert app.pool == PlainPool(size = 3, hosts = ["a"]) and app.pools == [PlainPool(size = 2)]
+    assert getattr(WithPlain, SECTIONS_ATTR) == {"pool": PlainPool, "pools": list[PlainPool]}
+    assert to_dict(app) == {"name": "n", "pool": {"size": 3, "hosts": ["a"]}, "pools": [{"size": 2, "hosts": []}]}
+    for suffix in ("json", "toml", "yaml"):
+        write(app, tmp_path / f"app.{suffix}")
+        assert WithPlain.load(tmp_path / f"app.{suffix}") == app, suffix
+
+
+@dataclasses.dataclass(frozen = True)
+class PlainLogin:
+    user: str
+    password: SecretStr
+    port: Port = 22
+
+
+class WithLogin(Config):
+    login: PlainLogin
+
+
+def test_a_plain_dataclass_section_is_checked_and_converted_as_a_configuration_is():
+    app = WithLogin.from_dict({"login": {"user": "u", "password": "p", "port": "2222"}})
+    assert app.login.port == 2222 and type(app.login.port) is Port and type(app.login.password) is SecretStr
+    with pytest.raises(ConfigError) as caught:
+        WithLogin.from_dict({"login": {"password": ["hunter2"], "port": 0, "extra": 1}})
+    found = {tuple(e["loc"][1:]): e for e in caught.value.errors()}
+    assert set(found) == {("login", "user"), ("login", "password"), ("login", "port"), ("login", "extra")}
+    assert found[("login", "user")]["type"] == "missing" and found[("login", "extra")]["type"] == "unknown"
+    assert found[("login", "password")]["input"] == "**********" and "hunter2" not in str(caught.value)

@@ -672,8 +672,8 @@ def main() -> int:
                 write_template(Keys, path)
                 error = raised(lambda: Keys.load(path))
                 assert {problem["type"] for problem in error.errors()} == {"missing"}, str(error)
-                #* YAML: a section with nothing under it would be null, so rate-limit is commented out whole (one problem, not three).
-                assert len(error.errors()) == (4 if fmt == "yaml" else 6), str(error)
+                #* Every format alike: a YAML section with nothing under it is null, read as an empty section, so its keys are missing.
+                assert len(error.errors()) == 6, str(error)
                 #* Every key that is commented out is put back: it is '#key', and a note is '# note'.
                 text = re.sub(r"(?m)^(\s*)#(?! )", r"\1", path.read_text())
                 path.write_text(text)

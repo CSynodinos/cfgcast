@@ -695,6 +695,39 @@ From the owner's review of the library ("an overall opinion", then the answers),
   It says `Database is frozen: db.password can't be assigned (...)`: the key path of a loaded section, never the value.
   380 tests.
 
+## Decided and fixed on 2026-11-26
+
+The open questions of the review of 2026-11-16, answered by the owner; each fix with tests, on 3.13 and 3.14.
+
+1. **A missing `section` is gathered** with the other problems (it was raised before the build): `build(..., found)`
+   says it first, and the load goes on with the files that have the section. The keys the schema needs are then
+   missing too, and said.
+2. **A null for a section that isn't `| None` is an empty section** (YAML `db:` with every key below it commented
+   out): its defaults taken, its required keys said. Only a single section; a list or dictionary of sections that is
+   null is still a `section` problem. The template's YAML workaround (`key: {}`, a required section commented out
+   whole) is gone: the header is written, and loading reads it as empty.
+3. **`write_template` no longer looks, then writes**: `_save(new = True)` takes the name with an exclusive create
+   (`O_EXCL`), then replaces that empty file atomically; it is removed if the write fails. A file made a moment
+   before, a dangling link, a directory: `FileExistsError`, nothing written through them.
+4. **`__cfg_sources__` is gone from the instance**: `_sources._LOADED`, by `id`, a weak reference taking the entry
+   out when the instance goes. `vars(app)` and pickle don't see it. What changes: a copy (`copy`, `deepcopy`) or an
+   unpickled configuration is no longer "loaded" (`sources_of` is a `ValueError`), as `dataclasses.replace` already
+   wasn't. 5 000 sections build in 55 ms.
+5. **A `__post_init__` message that holds a secret is left out whole** (`ValueError: (its text is left out: it holds
+   a secret)`), and that exception is not the `ConfigError`'s `__cause__`, whose text a traceback prints (a leak the
+   old masking had too). Masking the secret's letters alone told a short one by what was around it.
+6. **`parse_overrides` and an unknown key** (`DB.nope` kept as written): not changed, the owner was not sure. Seen
+   since: the message then says `DB: key not in the schema`, where `db.nope: key not in the schema` would point at
+   the real mistake. Small to change (keep the part that matched as the schema writes it).
+7. **A plain dataclass is a section everywhere**: `to_dict` and `__cfg_sections__` took only configurations, while
+   `_build` and the template took any dataclass. Found on the way: `_build` called a plain dataclass's `__init__`
+   unchecked, so `"3"` stayed text in an `int` field. `_construct` calls it through `enforced.validate_function`
+   (`coerce`, `deep`): checked, converted, every problem at once, secrets masked, as for a configuration.
+
+enforced, the same day: reinstalled editable (0.1.4) in both venvs. **Neither the durations nor the date plan is
+built there yet**: a `timedelta` takes no text (`"30s"`, `"PT30S"`) and no number, and a `date` field keeps a
+`datetime` with its time (`date_plan_cfgcast.md` still says "a plan, nothing built").
+
 ## What is left
 
 - **6. Durations**: waits on enforced (above).
@@ -703,7 +736,7 @@ From the owner's review of the library ("an overall opinion", then the answers),
   on the class; `secrets_dir`; one section per file in a list; an `fsync` of the directory after a write;
   `keys = ` a function; "did you mean `max-size`?" for a field's Python name in a file.
 - **Not proposed / not answered**: a JSON Schema, interpolation, reloading, `include`, keeping comments when writing.
-- The open questions of the review above.
+- Item 6 above (`parse_overrides` and a partly matched key), if the owner wants it.
 
 ## Later
 
