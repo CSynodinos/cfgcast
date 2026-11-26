@@ -106,7 +106,10 @@ enums, `Path`, `Decimal`, `datetime`, and enforced's validated types (`Port`, `U
 `PhoneNumber`, `Probability` ...).
 
 A field whose type is another configuration is a **section**: a table in TOML, a nested object in JSON and
-YAML, a `[section]` in ini. Sections can be defined in any order. On Python 3.13, quote the name of a
+YAML, a `[section]` in ini. A plain `@dataclass` works as a section too, checked and converted the same way.
+A section that is empty in the file (YAML `db:` with nothing below it, or a null) counts as an empty section:
+its defaults are taken and its required keys reported, unless the field is `| None`, where null means `None`.
+Sections can be defined in any order. On Python 3.13, quote the name of a
 section that is defined further down (`db: "Database"`), because 3.13 evaluates annotations immediately.
 From 3.14 either form works.
 
@@ -317,7 +320,8 @@ app = App.load("pyproject.toml", section = "tool.myapp")     # the table [tool.m
   rest of the file is ignored: it belongs to other tools.
 - It applies to every file of a list, but not to environment variables, which name the schema's own keys.
 - A problem keeps the full path, so you can find it in the file: `pyproject.toml:14: tool.myapp.db.port: ...`.
-- A file without the section is a problem (`tool.myapp: missing section`).
+- A file without the section is a problem (`tool.myapp: missing section`), reported with every other
+  problem of the load, including those of the files that do have it.
 
 ### Overrides for one run
 
@@ -352,8 +356,9 @@ app = App.load("app.toml", overrides = parse_overrides(sys.argv[1:], App))   # p
   start-up log.
 - `sources_of(app.db)` gives that section's own keys (`host`, not `db.host`).
 - It describes the load: a value assigned later (with `frozen = False`) still shows where the loaded one
-  came from. A configuration that wasn't loaded, such as `App(name = "x")` or a copy from
-  `dataclasses.replace`, is a `ValueError`.
+  came from. A configuration that wasn't loaded, such as `App(name = "x")`, a copy (`dataclasses.replace`,
+  `copy`), or one that was pickled and loaded back, is a `ValueError`.
+- It is kept beside the configuration, not in it: `vars(app)`, `==` and pickle don't see it.
 
 ## When something is wrong
 
@@ -399,9 +404,11 @@ The same problems as data, in pydantic's shape, for a log or an API response:
   either: what stands in a section's place may hold its secrets.
 - **An exception raised by a `__post_init__` is a problem like any other** (type `post_init`), gathered
   with the rest: `app.toml:3: db: ValueError: replica is the host itself`. Its `loc` is the section whose
-  `__post_init__` raised, it has no `input`, and the exception is the `ConfigError`'s `__cause__`. Keep
-  secrets out of your exception messages: cfgcast masks that class's `SecretStr` values in the text, but
-  can't know of any other secret.
+  `__post_init__` raised, it has no `input`, and the exception is the `ConfigError`'s `__cause__`.
+  If the exception's text holds the text of one of that section's secrets, the whole text is left out
+  (`ValueError: (its text is left out: it holds a secret)`) and the exception is not kept as the cause.
+  Only the secret's own letters masked would give it away. cfgcast can't know of any other secret, so keep
+  secrets out of exception messages anyway.
 - `ConfigError` is both an `enforced.InvalidDataError` and a `ValueError`: catch whichever you already do.
 - **A configuration built or changed in code raises a `ConfigError` too**: `App(name = 1)`, or
   `app.name = 1` on a class with `frozen = False`. There is no file then: `error.file` is `None` and `loc`
@@ -548,7 +555,7 @@ port = 5432
 - **With its required keys filled in, the template loads and gives the defaults.**
 - JSON is refused with a `ValueError`, since it has no comments. An existing file is kept
   (`FileExistsError`) unless you pass `overwrite = True`: a template written over a real configuration
-  would lose it.
+  would lose it. The name is taken with an exclusive create, so even a file made a moment before is kept.
 
 ## Format details
 
@@ -585,6 +592,8 @@ dictionary of sections is fine: `[by_region.eu]`.
 YAML is read with **YAML 1.2 booleans**: only `true` and `false` are booleans. In YAML 1.1, which PyYAML
 follows, `no`, `yes`, `on` and `off` are booleans too, so `country: no` (Norway) became `False`. Here it
 stays `"no"`, and a `bool` field still accepts `yes` and `on` through conversion.
+
+`db:` with every key below it commented out is null to YAML; cfgcast reads it as an empty section.
 
 When writing (which needs PyYAML too), any string that a YAML 1.1 or 1.2 reader would take for something
 else (`no`, `08`, `1e3`, `null`, `~`, `=` ...) is quoted. An unquoted `2026-10-17` is a date, and a
