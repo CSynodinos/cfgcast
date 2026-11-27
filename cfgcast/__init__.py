@@ -3,9 +3,9 @@ from ._errors import ConfigError, ConfigWarning, FrozenConfigError
 from ._base import Config, field, sources_of, to_dict, to_text, write, write_template
 from ._load import parse_overrides
 from ._sources import optional
-from clitint import turn_colours_off, turn_colours_on
+from ._colours import turn_colours_off, turn_colours_on
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "Config",
     "ConfigError",

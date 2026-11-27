@@ -21,7 +21,7 @@ unknown key's value not at all: nothing says it isn't a secret.
 from dataclasses import FrozenInstanceError
 from typing import Any, Callable, Sequence
 from enforced import InvalidDataError, InvalidDataWarning
-from clitint import formatter
+from ._colours import formatter
 from ._hints import mentions_secret
 import inspect
 import os

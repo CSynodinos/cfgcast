@@ -60,14 +60,20 @@ App(name='shop', db=Database(host='db.internal', port=Port(5432), password=Secre
   and `sources_of(app)` tells you for every value.
 - **Writing and templates.** Write any configuration to any format, and generate a commented template
   of a schema with every key, its default, type and description.
-- **Few dependencies:** enforced, clitint (colours) and tomli-w. PyYAML only if you use YAML.
+- **Few dependencies:** enforced and tomli-w. PyYAML only if you use YAML, clitint only if you want colours.
 
 ## Install
 
 ```bash
-pip install cfgcast            # JSON, TOML, ini
-pip install "cfgcast[yaml]"    # and YAML (PyYAML)
+pip install cfgcast                   # JSON, TOML, ini
+pip install "cfgcast[yaml]"           # and YAML (PyYAML)
+pip install "cfgcast[colour]"         # coloured messages on a terminal (clitint)
+pip install "cfgcast[yaml,colour]"    # both
 ```
+
+Without `colour`, every message is plain text. With it, messages and warnings are coloured on a terminal, and
+clitint's switches apply: `CLITINT_COLOURS_OFF=1` or `NO_COLOR` in the environment, or `turn_colours_off()` /
+`turn_colours_on()` from `cfgcast`, which do nothing without clitint.
 
 ## Writing a schema
 

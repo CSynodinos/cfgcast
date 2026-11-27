@@ -66,7 +66,7 @@ from dataclasses import (
     is_dataclass
     )
 from collections.abc import Mapping, Sequence
-from clitint import formatter
+from ._colours import formatter
 import enforced
 import inspect
 import os
