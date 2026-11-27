@@ -7,3 +7,4 @@ dist/
 CLAUDE.md
 # the site mkdocs builds (mkdocs.yml)
 site/
+PLAN.md
