@@ -4,7 +4,16 @@ All notable changes to cfgcast. The format follows [Keep a Changelog](https://ke
 the project uses [semantic versioning](https://semver.org/) (before 1.0, a minor or patch release may still change
 the API; such changes are listed under **Changed** and marked **breaking**).
 
-## [0.1.0] - unreleased
+## [Unreleased]
+
+### Changed
+
+- **Colours are optional.** clitint is no longer a dependency: `pip install "cfgcast[colour]"` installs it and
+  colours messages on a terminal, as `enforced[colour]` does. Without it every message is plain text, and
+  `turn_colours_off` / `turn_colours_on` are still there and do nothing. If you want coloured messages, install
+  the `colour` extra: an upgrade from 0.1.0 without it gives plain ones.
+
+## [0.1.0] - 2026-11-27
 
 The first release. Requires Python 3.13 or later and enforced 0.2.0.
 
@@ -45,5 +54,8 @@ The first release. Requires Python 3.13 or later and enforced 0.2.0.
 - **`FrozenConfigError`** for an assignment to a frozen configuration: a `dataclasses.FrozenInstanceError` that
   names the key path, never the value.
 - **`ConfigWarning`** names the keys `strict = False` ignored, and where the class is written.
-- **Colours are optional**: `pip install "cfgcast[colour]"` (clitint) colours messages on a terminal; without it
-  every message is plain text and `turn_colours_off` / `turn_colours_on` do nothing.
+- **Coloured messages** on a terminal (clitint), switched off with `CLITINT_COLOURS_OFF=1`, `NO_COLOR` or
+  `turn_colours_off()`.
+
+[Unreleased]: https://github.com/CSynodinos/cfgcast/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/CSynodinos/cfgcast/releases/tag/v0.1.0
