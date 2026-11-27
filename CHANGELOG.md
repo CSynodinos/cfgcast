@@ -4,7 +4,7 @@ All notable changes to cfgcast. The format follows [Keep a Changelog](https://ke
 the project uses [semantic versioning](https://semver.org/) (before 1.0, a minor or patch release may still change
 the API; such changes are listed under **Changed** and marked **breaking**).
 
-## [Unreleased]
+## [0.1.1] - unreleased
 
 ### Changed
 
@@ -57,5 +57,5 @@ The first release. Requires Python 3.13 or later and enforced 0.2.0.
 - **Coloured messages** on a terminal (clitint), switched off with `CLITINT_COLOURS_OFF=1`, `NO_COLOR` or
   `turn_colours_off()`.
 
-[Unreleased]: https://github.com/CSynodinos/cfgcast/compare/v0.1.0...HEAD
+[0.1.1]: https://github.com/CSynodinos/cfgcast/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/CSynodinos/cfgcast/releases/tag/v0.1.0
