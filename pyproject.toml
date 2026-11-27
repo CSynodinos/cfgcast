@@ -7,7 +7,7 @@ name = "cfgcast"
 dynamic = ["version"]
 description = "Typed configuration files (JSON, TOML, ini/cfg, YAML), checked by enforced"
 requires-python = ">=3.13"
-dependencies = ["enforced>=0.1.4", "clitint>=0.1.3", "tomli-w>=1.1"]
+dependencies = ["enforced>=0.2.0", "clitint>=0.1.3", "tomli-w>=1.1"]
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
