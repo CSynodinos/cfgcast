@@ -7,7 +7,6 @@ import warnings
 import pytest
 
 from enforced import InvalidDataError
-import clitint._tint as tint                                   # the colour switches are clitint's state
 from enforced.data_types import Port, SecretStr
 from cfgcast import Config, ConfigError, to_dict
 from cfgcast._build import MASK, build, problems_of
@@ -229,6 +228,7 @@ def test_one_problem_reads_in_the_singular():
 
 
 def test_the_warning_is_plain_as_text_and_coloured_on_a_terminal(monkeypatch):
+    tint = pytest.importorskip("clitint._tint")                       # the colour switches are clitint's state (cfgcast[colour])
     monkeypatch.setattr(tint, "_CHOSEN", True)
     warning = ConfigWarning("app.ini", Loose, [{"type": "unknown", "loc": ["app.ini", "db", "typo"], "msg": "m"}])
     assert str(warning) == f"1 unknown key ignored in app.ini for Loose ({LOOSE_AT}):\n    -> db.typo"

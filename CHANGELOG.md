@@ -45,3 +45,5 @@ The first release. Requires Python 3.13 or later and enforced 0.2.0.
 - **`FrozenConfigError`** for an assignment to a frozen configuration: a `dataclasses.FrozenInstanceError` that
   names the key path, never the value.
 - **`ConfigWarning`** names the keys `strict = False` ignored, and where the class is written.
+- **Colours are optional**: `pip install "cfgcast[colour]"` (clitint) colours messages on a terminal; without it
+  every message is plain text and `turn_colours_off` / `turn_colours_on` do nothing.
