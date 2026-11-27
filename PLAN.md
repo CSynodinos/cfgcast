@@ -728,9 +728,19 @@ enforced, the same day: reinstalled editable (0.1.4) in both venvs. **Neither th
 built there yet**: a `timedelta` takes no text (`"30s"`, `"PT30S"`) and no number, and a `date` field keeps a
 `datetime` with its time (`date_plan_cfgcast.md` still says "a plan, nothing built").
 
+## enforced 0.2.0 (2026-11-27)
+
+Durations and the date rule are in enforced (`PLAN_cfgcast_durations_dates.md`, D1 to D6 as recommended). Tried from
+cfgcast: TOML and YAML durations load (`"1h30m"`, `"PT0.5S"`, `"1 day, 2:03:04"`, `2w`, a `list[timedelta]`), a TOML
+midnight timestamp for a `date` field is its day, and `timeout = 30`, `"5x"`, `"P1Y"`, `"5M"`, a timestamp with a time
+for a `date` are each one problem with its line and reason. One change here: enforced's dispatch no longer gives a
+`datetime` to a handler for `date`, so nine tests and six simulation checks failed on writing a `datetime`; every
+writer handler that takes a date names `datetime` too. Left: cfgcast's side of durations (item 6).
+
 ## What is left
 
-- **6. Durations**: waits on enforced (above).
+- **6. Durations**: waits on enforced (above). Its plan, with the date plan, for the agent in enforced:
+  `/mnt/d/dev/enforced/PLAN_cfgcast_durations_dates.md` (2026-11-26; decisions D1 to D6 there are the owner's).
 - **Maybe** (15): renamed keys (`field(was = ...)`), a union with a section.
 - **Small, from what was built**: a public `template_text` (print a template); several `.env` files and `env_file`
   on the class; `secrets_dir`; one section per file in a list; an `fsync` of the directory after a write;
