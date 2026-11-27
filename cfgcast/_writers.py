@@ -13,6 +13,9 @@ as its number, and a `SecretStr` as its real text, never the mask (`str()` of it
 An `Enum` is written as its value; a path, a `Decimal` and a `UUID` as text. Anything else is a
 `TypeError` before the file is opened: a file is written whole or not at all.
 
+A `timedelta` is written as text in the short form (`1h30m`, `500ms`), which enforced reads back under
+`coerce`, in every format.
+
 Dates and times (`date`, `datetime`, `time`) are written so that loading gives them back: TOML as its
 own literals, YAML as a bare timestamp (a `time` quoted: YAML has none), JSON and ini as ISO 8601 text,
 which coercion reads. A `time` with an offset is ISO text in TOML too (TOML's time has no offset).
@@ -20,7 +23,7 @@ which coercion reads. A `time` with an offset is ISO text in TOML too (TOML's ti
 `None`: JSON and YAML write `null`; TOML and ini have no null, so the key is left out, and
 loading the file gives the field its code default (the same where that default is `None`).
 """
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
 from pathlib import PurePath
@@ -162,6 +165,31 @@ def _(node: bool, mask: bool) -> bool:
 @_plain_of.register
 def _(node: PurePath | Decimal | UUID, mask: bool) -> str:
     return str(node)
+
+@_plain_of.register
+def _(node: timedelta, mask: bool) -> str:
+    return duration_text(node)
+
+
+#* The units of the short form, largest first, in microseconds: what enforced reads back under coerce.
+_UNITS = (("d", 86_400_000_000), ("h", 3_600_000_000), ("m", 60_000_000), ("s", 1_000_000), ("ms", 1_000), ("us", 1))
+
+
+def duration_text(value: timedelta) -> str:
+    """
+    A `timedelta` in the short form, as enforced reads it under `coerce`: `1h30m`, `500ms`, `1d2h3m4s`, `-5m`,
+    `0s`. Exact: whole units only, down to the microsecond, so the value loads back the same.
+    """
+    total = (value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds
+    if total == 0:
+        return "0s"
+    sign, left = ("-" if total < 0 else ""), abs(total)
+    parts = []
+    for unit, size in _UNITS:
+        count, left = divmod(left, size)
+        if count:
+            parts.append(f"{count}{unit}")
+    return sign + "".join(parts)
 
 @_plain_of.register
 def _(node: dict, mask: bool) -> dict:

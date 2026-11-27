@@ -14,6 +14,7 @@ turns the tree into lines, with the writers' own rules for a key and a value. Co
 lines only (`#`): ini has no other kind.
 """
 from dataclasses import MISSING, dataclass, field as dataclass_field, is_dataclass
+from datetime import timedelta
 from enum import Enum
 from types import NoneType
 from typing import Annotated, Any, Callable, Literal, TypeAliasType, Union, get_args, get_origin
@@ -212,6 +213,8 @@ def _placeholder(hint: Any) -> Any:
             for plain, value in ((bool, False), (int, 0), (float, 0.0)):    # bool first: it is an int
                 if issubclass(member, plain):
                     return value
+            if issubclass(member, timedelta):
+                return "0s"                                         # a duration is text with a unit: "" is none
     return ""
 
 

@@ -1,8 +1,10 @@
-# A bare timestamp is a date / datetime to YAML. A time is quoted: bare, 02:15:00 is a base-60 number.
+# A bare timestamp is a date / datetime to YAML, a duration is text (1h30m). A time is quoted: bare, 02:15:00 is a base-60 number.
 name: nightly
 starts: 2026-10-17
 built_at: 2026-10-17T12:30:00+00:00
 daily_at: "02:15:00"
+every: 1h30m
+retries: [500ms, 2s, 1m]
 regions:
   eu:
     host: eu.example.com

@@ -400,3 +400,63 @@ def test_a_yaml_line_break_of_unicode_is_escaped_not_written_raw():
     from cfgcast._writers import yaml_text
     for text in ("nel\x85here", "line separator", "bom﻿"):
         assert yaml_text({"s": text}).count("\n") == 1 and yaml_text({"s": text}).startswith('s: "')
+
+
+# ── durations ───────────────────────────────────────────────────────────────
+
+from cfgcast._writers import duration_text                          # noqa: E402
+
+
+@pytest.mark.parametrize(("value", "text"), [
+    (timedelta(0), "0s"),
+    (timedelta(hours = 1, minutes = 30), "1h30m"),
+    (timedelta(milliseconds = 500), "500ms"),
+    (timedelta(days = 1, seconds = 7384), "1d2h3m4s"),
+    (timedelta(minutes = -5), "-5m"),
+    (timedelta(microseconds = 1), "1us"),
+    (timedelta(weeks = 2), "14d"),
+    (timedelta.max, "999999999d23h59m59s999ms999us"),
+    (timedelta.min, "-999999999d"),
+    ], ids = str)
+def test_a_duration_is_written_in_the_short_form(value, text):
+    assert duration_text(value) == text
+
+
+@pytest.mark.parametrize("fmt", ["json", "toml", "yaml", "ini"])
+def test_a_duration_is_text_in_every_format_and_loads_back(tmp_path, fmt):
+    if fmt == "yaml":
+        pytest.importorskip("yaml")
+    from cfgcast import Config, field, write
+
+    class Job(Config):
+        every: timedelta
+        retries: list[timedelta] = field(default_factory = list)
+        by_name: dict[str, timedelta] = field(default_factory = dict)
+
+    job = Job(every = timedelta(hours = 1, minutes = 30), retries = [timedelta(milliseconds = 500), timedelta(minutes = -5)],
+              by_name = {"slow": timedelta(days = 1)})
+    write(job, tmp_path / f"job.{fmt}")
+    assert "1h30m" in (tmp_path / f"job.{fmt}").read_text()
+    assert Job.load(tmp_path / f"job.{fmt}") == job
+
+
+def test_any_duration_loads_back_exactly():
+    import random
+    from cfgcast import Config
+
+    class One(Config):
+        value: timedelta
+
+    draw = random.Random(7)
+    values = [timedelta(microseconds = draw.randint(-10 ** 15, 10 ** 15)) for _ in range(200)]
+    for value in [*values, timedelta.max, timedelta.min]:
+        assert One.from_dict({"value": duration_text(value)}).value == value, value
+
+
+def test_to_dict_plain_gives_a_duration_as_its_text():
+    from cfgcast import Config, to_dict
+
+    class One(Config):
+        value: timedelta = timedelta(seconds = 3)
+
+    assert to_dict(One(), plain = True) == {"value": "3s"} and to_dict(One()) == {"value": timedelta(seconds = 3)}

@@ -252,3 +252,46 @@ def test_keys_that_were_converted_are_written_and_load_again(tmp_path):
     for suffix in ("json", "toml", "ini"):
         write(limits, tmp_path / f"l.{suffix}")
         assert Limits.load(tmp_path / f"l.{suffix}") == limits
+
+
+# ── enforced 0.2.0: a date takes no datetime, text is a duration ───────────
+
+@pytest.mark.parametrize("suffix", ["json", "toml", "yaml", "ini"])
+def test_a_date_written_and_loaded_is_the_same_day(tmp_path, suffix):
+    if suffix == "yaml":
+        pytest.importorskip("yaml")
+    from datetime import date
+
+    class Day(Config):
+        day: date
+
+    write(Day(day = date(2026, 10, 17)), tmp_path / f"d.{suffix}")
+    loaded = Day.load(tmp_path / f"d.{suffix}")
+    assert loaded.day == date(2026, 10, 17) and type(loaded.day) is date
+
+
+@pytest.mark.parametrize(("suffix", "text"), [("toml", "day = 2026-10-17T15:30:00\n"), ("yaml", "day: 2026-10-17T15:30:00\n")])
+def test_a_timestamp_with_a_time_for_a_date_is_a_problem_with_its_key(tmp_path, suffix, text):
+    if suffix == "yaml":
+        pytest.importorskip("yaml")
+    from datetime import date
+
+    class Day(Config):
+        day: date
+
+    (tmp_path / f"d.{suffix}").write_text(text)
+    with pytest.raises(ConfigError) as caught:
+        Day.load(tmp_path / f"d.{suffix}")
+    (problem,) = caught.value.errors()
+    assert problem["loc"][1:] == ["day"] and problem["type"] == "invalid"
+    assert "has a time (15:30:00): a date field takes a day" in str(caught.value)
+
+
+def test_a_midnight_timestamp_for_a_date_is_its_day(tmp_path):
+    from datetime import date
+
+    class Day(Config):
+        day: date
+
+    (tmp_path / "d.toml").write_text("day = 2026-10-17T00:00:00\n")
+    assert Day.load(tmp_path / "d.toml").day == date(2026, 10, 17)

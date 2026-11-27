@@ -8,7 +8,7 @@ Each check is reported on its own (a failing one doesn't stop the others), a for
 needs a package that isn't installed (PyYAML) is skipped, and the exit status is 1 if any failed.
 """
 from collections.abc import Callable
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from cfgcast import Config, ConfigError, FrozenConfigError, field, sources_of, to_dict, write, write_template
@@ -156,6 +156,8 @@ class Schedule(Config):
     starts: date
     built_at: datetime
     daily_at: time
+    every: timedelta                                         # a duration: text in every format
+    retries: list[timedelta]
     regions: dict[str, Region]                               # sections by name
 
 
@@ -548,13 +550,15 @@ def main() -> int:
 
     # 8. dates and times, and a dictionary of sections, in every format ---------------------------
     for fmt in FORMATS:
-        @check(f"load schedule.{fmt}: dates, times and sections by name")
+        @check(f"load schedule.{fmt}: dates, times, durations and sections by name")
         def _(fmt = fmt) -> None:
             loaded = Schedule.load(CFGS / f"schedule.{fmt}")
             assert loaded == schedule, f"differs from schedule.json: {loaded}"
             assert loaded.starts == date(2026, 10, 17) and type(loaded.starts) is date
             assert loaded.built_at == datetime(2026, 10, 17, 12, 30, tzinfo = timezone.utc)
             assert loaded.daily_at == time(2, 15)
+            assert loaded.every == timedelta(hours = 1, minutes = 30)         # each file in another form enforced reads
+            assert loaded.retries == [timedelta(milliseconds = 500), timedelta(seconds = 2), timedelta(minutes = 1)]
             assert type(loaded.regions["us"]) is Region and loaded.regions["eu"].weight == 0.7
 
         @check(f"write dates and sections by name as {fmt} and read them back")
@@ -573,6 +577,25 @@ def main() -> int:
             assert "daily_at = 02:15:00\n" in (Path(folder) / "s.toml").read_text()
             assert "starts: 2026-10-17\n" in (Path(folder) / "s.yaml").read_text()
             assert "daily_at: '02:15:00'\n" in (Path(folder) / "s.yaml").read_text()   # bare, YAML 1.1 reads a number
+
+    @check("a duration is written in the short form, in every format, and loads back")
+    def _() -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            for fmt in FORMATS:
+                path = Path(folder) / f"s.{fmt}"
+                write(schedule, path)
+                assert "1h30m" in path.read_text() and "500ms" in path.read_text(), fmt
+                assert Schedule.load(path).every == schedule.every, fmt
+
+    @check("a duration without a unit and a date with a time are each a problem with its key")
+    def _() -> None:
+        data = json.loads((CFGS / "schedule.json").read_text())
+        data.update(every = 90, starts = "2026-10-17T15:30:00", retries = ["1s", "5M"])
+        error = raised(lambda: Schedule.from_dict(data))
+        found = {".".join(map(str, loc[1:])): problem["msg"] for loc, problem in zip(problem_locs(error), error.errors())}
+        assert 'write it with a unit: "30s", "5m"' in found["every"], found
+        assert "unknown unit 'M'" in found["retries.1"], found
+        assert set(found) == {"every", "starts", "retries.1"}, found
 
     # 9. several files in layers -----------------------------------------------------------------
     @check("layers: sections merge key by key, a later file wins, a list is replaced")

@@ -300,3 +300,19 @@ def test_a_dangling_link_or_a_directory_is_not_written_through(tmp_path):
     (tmp_path / "dir.toml").mkdir()
     with pytest.raises(FileExistsError):
         write_template(App, tmp_path / "dir.toml")
+
+
+@pytest.mark.parametrize("suffix", FORMATS)
+def test_a_duration_is_written_in_the_short_form_and_its_placeholder_loads(tmp_path, suffix):
+    _needs(suffix)
+    from datetime import timedelta
+
+    class Job(Config):
+        every: timedelta = timedelta(hours = 1, minutes = 30)
+        wait: timedelta
+
+    file = tmp_path / f"job.{suffix}"
+    write_template(Job, file)
+    assert "1h30m" in file.read_text()
+    file.write_text(_uncommented(file.read_text(), "wait"))
+    assert Job.load(file) == Job(wait = timedelta(0))

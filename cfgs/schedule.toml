@@ -1,8 +1,10 @@
-# Dates and times are TOML's own literals; a dictionary of sections is a table of tables.
+# Dates and times are TOML's own literals, a duration is text (any form enforced reads: 1h30m, PT1H30M, 1:30:00); a dictionary of sections is a table of tables.
 name = "nightly"
 starts = 2026-10-17                                # a date
 built_at = 2026-10-17T12:30:00+00:00               # a datetime, with its offset
 daily_at = 02:15:00                                # a time
+every = "1h30m"                                    # a duration: text, the short form
+retries = ["500ms", "2s", "1m"]
 
 [regions.eu]
 host = "eu.example.com"
