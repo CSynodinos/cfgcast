@@ -5,7 +5,7 @@ from ._load import parse_overrides
 from ._sources import optional
 from ._colours import turn_colours_off, turn_colours_on
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "Config",
     "ConfigError",
