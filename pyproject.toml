@@ -1,17 +1,54 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfgcast"
 dynamic = ["version"]
-description = "Typed configuration files (JSON, TOML, ini/cfg, YAML), checked by enforced"
+description = "Typed configuration files (JSON, TOML, ini/cfg, YAML): a class in, every value checked, every problem at once."
+readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Christos Synodinos" }]
 dependencies = ["enforced>=0.2.0", "clitint>=0.1.3", "tomli-w>=1.1"]
+keywords = [
+    "configuration",
+    "config",
+    "settings",
+    "toml",
+    "yaml",
+    "ini",
+    "json",
+    "dataclass",
+    "validation",
+    "typing",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://csynodinos.github.io/cfgcast/"
+Documentation = "https://csynodinos.github.io/cfgcast/"
+Source = "https://github.com/CSynodinos/cfgcast"
+Issues = "https://github.com/CSynodinos/cfgcast/issues"
+Changelog = "https://github.com/CSynodinos/cfgcast/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# pip install "cfgcast[yaml]": YAML files (PyYAML, to read them and to write them).
 yaml = ["PyYAML>=6"]
-dev = ["pytest", "mypy", "PyYAML>=6", "types-PyYAML"]
+dev = ["pytest", "mypy", "PyYAML>=6", "types-PyYAML", "build", "twine"]
+# The site (mkdocs.yml): pip install -e ".[docs]", then mkdocs serve.
+docs = ["mkdocs-material>=9.5,<10"]
 
 [tool.setuptools]
 packages = ["cfgcast"]

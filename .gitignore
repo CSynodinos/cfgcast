@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 CLAUDE.md
+# the site mkdocs builds (mkdocs.yml)
+site/

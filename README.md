@@ -88,7 +88,7 @@ class Lenient(Config, strict = False, frozen = False):
 
 | option | default | |
 |---|---|---|
-| `strict` | `True` | Refuse keys the schema doesn't name. `False` ignores them (with a warning) in this class and every section below it: useful for an older program reading a newer file. See [Unknown keys](#unknown-keys-under-strict--false). |
+| `strict` | `True` | Refuse keys the schema doesn't name. `False` ignores them (with a warning) in this class and every section below it: useful for an older program reading a newer file. See [Unknown keys](#ignored-unknown-keys). |
 | `frozen` | `True` | A configuration can't be changed after it is made. See [Frozen](#frozen). |
 | `env_prefix` | `None` | Read environment variables with this prefix whenever the class is loaded. See [Environment variables](#environment-variables). |
 | `keys` | `None` | `"kebab-case"` writes a field `max_size` as the key `max-size`. See [Keys that aren't Python names](#keys-that-arent-python-names). |
@@ -98,7 +98,7 @@ Two things are always on:
 - **Values are converted**, as enforced's `coerce` does it: `"8080"` becomes `8080` for an `int`, `"true"`
   and `"yes"` become `True` for a `bool`, `"2026-10-17"` becomes a `date`, and a `date` given for a
   `datetime` is its midnight. An `int` is never turned into a `str`: `name = 1` is reported, because you
-  probably meant `"1"`.
+  probably meant `"1"`. See [Dates and durations](#dates-and-durations) for those two.
 - **Every item is checked**: each item of a `list[Port]`, each value of a `dict[str, float]`.
 
 Any type enforced can check works in a schema: `Literal["DEBUG", "INFO"]`, `Annotated[int, lambda v: v > 0]`,
@@ -112,6 +112,36 @@ its defaults are taken and its required keys reported, unless the field is `| No
 Sections can be defined in any order. On Python 3.13, quote the name of a
 section that is defined further down (`db: "Database"`), because 3.13 evaluates annotations immediately.
 From 3.14 either form works.
+
+### Dates and durations
+
+```python
+from datetime import date, timedelta
+
+class Job(Config):
+    starts: date
+    every: timedelta = timedelta(hours = 1)
+    retries: list[timedelta] = field(default_factory = list)
+```
+
+```toml
+starts = 2026-10-17
+every = "1h30m"
+retries = ["500ms", "2s", "1m"]
+```
+
+- **A duration is text with a unit**: `500ms`, `30s`, `5m`, `2h`, `1d`, `1w`, combined (`1h30m`, `1h 30m`),
+  with a fraction (`1.5h`) or a sign (`-5m`). The units are `w`, `d`, `h`, `m`, `s`, `ms` and `us`, lower case,
+  largest first. ISO 8601 (`PT30S`, `P1DT2H`, `P2W`) and what `str(timedelta)` writes (`0:00:30`,
+  `1 day, 2:03:04`) work too.
+- **A number is refused** (`timeout = 30`): seconds or milliseconds would be a guess, so the message says
+  `write it with a unit: "30s", "5m"`. So are years and months (`P1Y`, `P2M`), which have no fixed length,
+  and anything finer than a microsecond: nothing is rounded.
+- **A `date` field takes a day, not a moment.** A TOML or YAML timestamp at midnight (`2026-10-17T00:00:00`)
+  is its day. One with a time (`15:30`) or a time zone is a problem: `has a time (15:30:00): a date field
+  takes a day`. Write `date | datetime` where both are meant.
+
+These rules are enforced's (0.2.0).
 
 ### Lists and dictionaries of sections
 
@@ -427,7 +457,7 @@ ConfigError: 3 problems in base.toml, prod.toml, APP_* for App:
 `error.files` is the tuple of sources (`("base.toml", "prod.toml", "APP_*")`), and `error.file` the same
 as one text.
 
-### Unknown keys under `strict = False`
+### Ignored unknown keys
 
 `strict = False` applies to the class it is set on and every section below it, strict ones included. A
 section can loosen itself under a strict class, but can't tighten what is above it. The ignored keys are
@@ -480,6 +510,8 @@ hosts: []
 - **Dates and times** load back as the same values: as TOML's own date and time literals, as a bare date or
   timestamp in YAML (a `time` quoted), and as ISO 8601 text in JSON and ini (`2026-10-17T12:00:00+00:00`).
   TOML has no time with an offset, so such a time is quoted text there.
+- **Durations** are text in the short form in every format (`1h30m`, `500ms`, `-5m`, `0s`), exact to the
+  microsecond, so they load back the same.
 - **A `dict` key that isn't text** (a number, a date, an enum) is written as text and converted back on
   loading (`dict[int, str]`).
 - What a format can't hold is refused before the file is opened (see [ini](#ini)).
@@ -502,8 +534,8 @@ json.dumps(to_dict(app, plain = True))  # for a log, a response, a database colu
   a file is where secrets belong.
 - **`to_dict(app)`** gives the values as they are, with sections as nested dictionaries. Secrets stay
   `SecretStr` (masked when printed), and lists and dictionaries are copies.
-- **`to_dict(app, plain = True)`** gives only what JSON can hold: a path, a `Decimal`, a `UUID`, a date and a
-  time as text, an enum as its value, and a `SecretStr` as the mask (`reveal_secrets = True` for its text).
+- **`to_dict(app, plain = True)`** gives only what JSON can hold: a path, a `Decimal`, a `UUID`, a date, a
+  time and a duration (`1h30m`) as text, an enum as its value, and a `SecretStr` as the mask (`reveal_secrets = True` for its text).
 - **Don't `json.dumps(to_dict(app))`**: it fails on a `Path` or a `datetime`, and where it doesn't fail, it
   writes a `SecretStr`'s real text (`json` reads a `str` subclass by its characters).
 - JSON has no NaN or infinity, so the JSON writer refuses them and names the key.
@@ -605,7 +637,6 @@ TOML has no null: a `None` is left out when writing, and loading the file gives 
 
 ## Not yet
 
-- Durations (`"30s"`, `"5m"`): a `timedelta` field doesn't take text yet.
 - Renamed keys (reading the old key too, with a warning).
 - A union of a section and something else (`db: Database | str`).
 - Several `.env` files, a directory of secret files, and a JSON Schema of a configuration.
