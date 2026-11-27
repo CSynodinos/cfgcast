@@ -125,14 +125,16 @@ def _plain(value: Any, mask: bool = False) -> Any:
     return _plain_of(value, mask)
 
 
-#* Type strategy: each node is dispatched on its type to its handler. The dispatchers are made once, here:
+#* Type strategy: each node is dispatched on its type to its handler. A handler for `date` doesn't take a
+#* `datetime` (enforced 0.2.0: a datetime is no date there), so every one that takes both names both.
+#* The dispatchers are made once, here:
 #* one made inside the function that calls it is built again at every call (some 300 µs, against 0.2 µs).
 @dispatch
 def _plain_of(node: Any, mask: bool) -> Any:
     raise TypeError(f"a {type(node).__name__} can't be written to a configuration file")
 
 @_plain_of.register
-def _(node: None | date | time, mask: bool) -> None | date | time:
+def _(node: None | date | datetime | time, mask: bool) -> None | date | datetime | time:
     return node
 
 @_plain_of.register
@@ -180,7 +182,7 @@ def _json_of(node: Any) -> Any:
     return node
 
 @_json_of.register
-def _(node: date | time) -> str:
+def _(node: date | datetime | time) -> str:
     return node.isoformat()
 
 @_json_of.register
@@ -228,7 +230,7 @@ def _(node: int | float) -> str:
     return repr(node)
 
 @_key_of.register
-def _(node: date | time) -> str:
+def _(node: date | datetime | time) -> str:
     return node.isoformat()
 
 
@@ -322,7 +324,7 @@ def _toml_value(node: Any, where: str) -> str:
 
 
 @_toml_value.register
-def _(node: bool | int | float | str | date, where: str) -> str:
+def _(node: bool | int | float | str | date | datetime, where: str) -> str:
     return _toml_scalar(node)
 
 
@@ -392,7 +394,7 @@ def _(node: str, where: str) -> str:
 
 
 @_ini_text.register
-def _(node: date | time, where: str) -> str:
+def _(node: date | datetime | time, where: str) -> str:
     return node.isoformat()
 
 
